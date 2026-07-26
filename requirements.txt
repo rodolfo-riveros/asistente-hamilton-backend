@@ -1,0 +1,27 @@
+# Backend "Asistente Hamilton" — versiones verificadas y fijadas.
+#
+# scikit-learn está fijado a 1.6.1 porque es la versión con la que se
+# entrenó/serializó SVM_MODELO.pkl y SVM_scaler.pkl (joblib.load advierte
+# "InconsistentVersionWarning" si se usa otra versión). No subir esta versión
+# sin volver a entrenar y re-serializar el modelo, o sin confirmar
+# explícitamente que el resultado del pipeline no cambia.
+
+fastapi==0.140.0
+uvicorn[standard]==0.51.0
+joblib==1.5.3
+numpy==2.5.1
+scikit-learn==1.6.1
+httpx==0.28.1
+pydantic-settings==2.14.2
+python-dotenv==1.2.2
+
+# Subida del audio en POST /voz/transcribir (multipart).
+python-multipart==0.0.20
+
+# Sólo se usa con LLM_PROVIDER=anthropic. DeepSeek, NVIDIA y el resto de APIs
+# compatibles con OpenAI van por httpx, sin SDK.
+anthropic==0.120.0
+
+# --- Tests ---
+pytest==9.1.1
+pytest-asyncio==1.4.0

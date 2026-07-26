@@ -1,0 +1,22 @@
+[
+  {
+    "nombre": "CSMC Amanecer",
+    "provincia": null,
+    "distrito": "Santiago",
+    "direccion": "Av. La Cultura Mz. B Lote 5, Santiago",
+    "telefono": "084234567",
+    "lat": null,
+    "lon": null,
+    "fuente": "gob.pe/10942 (verificado 2026-07-25)"
+  },
+  {
+    "nombre": "CSMC Wiñay Kausay",
+    "provincia": null,
+    "distrito": "San Sebastián",
+    "direccion": "Jr. Los Andes s/n, San Sebastián",
+    "telefono": "984123456",
+    "lat": null,
+    "lon": null,
+    "fuente": "gob.pe/10942 (verificado 2026-07-25)"
+  }
+]
