@@ -13,6 +13,7 @@ usa `guardar_mensajes`, que registra el fallo y no interrumpe la conversación.
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
 from app.db import supabase
@@ -79,6 +80,51 @@ async def guardar_mensajes(
 # --------------------------------------------------------------------------- #
 
 
+async def listar_sesiones(usuario_id: str, limite: int = 20) -> list[dict]:
+    """Sesiones del usuario, la más reciente primero."""
+    return await supabase.select(
+        "sesiones",
+        {
+            "usuario_id": f"eq.{usuario_id}",
+            "select": "id,test_completo,protocolo_crisis_activo,creado_en,actualizado_en",
+            "order": "actualizado_en.desc",
+            "limit": limite,
+        },
+    )
+
+
+async def obtener_sesion(sesion_id: str, usuario_id: str) -> dict | None:
+    filas = await supabase.select(
+        "sesiones",
+        {
+            "id": f"eq.{sesion_id}",
+            "usuario_id": f"eq.{usuario_id}",
+            "select": "id,test_completo,protocolo_crisis_activo,creado_en,actualizado_en",
+            "limit": 1,
+        },
+    )
+    return filas[0] if filas else None
+
+
+async def obtener_mensajes(sesion_id: str, usuario_id: str, limite: int = 200) -> list[dict]:
+    """
+    Transcripción de una conversación, en orden cronológico.
+
+    Se filtra también por `usuario_id` porque el backend consulta con la service
+    role key, que ignora RLS: el aislamiento lo garantizamos aquí.
+    """
+    return await supabase.select(
+        "mensajes",
+        {
+            "sesion_id": f"eq.{sesion_id}",
+            "usuario_id": f"eq.{usuario_id}",
+            "select": "rol,contenido,creado_en",
+            "order": "creado_en.asc",
+            "limit": limite,
+        },
+    )
+
+
 async def guardar_evaluacion(
     sesion_id: str,
     usuario_id: str | None,
@@ -127,3 +173,336 @@ async def listar_evaluaciones(usuario_id: str, limite: int = 50) -> list[dict]:
         }
         for fila in filas
     ]
+
+
+# --------------------------------------------------------------------------- #
+# Hilo único de conversación (estilo mensajería)
+# --------------------------------------------------------------------------- #
+
+
+async def sesion_activa(usuario_id: str) -> str | None:
+    """
+    Id del hilo de conversación del usuario.
+
+    La app no maneja sesiones: hay UN hilo continuo por persona, como en
+    WhatsApp. Se reutiliza el más reciente y sólo se crea uno nuevo si no hay
+    ninguno.
+    """
+    filas = await supabase.select(
+        "sesiones",
+        {
+            "usuario_id": f"eq.{usuario_id}",
+            "select": "id",
+            "order": "actualizado_en.desc",
+            "limit": 1,
+        },
+    )
+    return filas[0]["id"] if filas else None
+
+
+async def historial_usuario(usuario_id: str, limite: int = 200) -> list[dict]:
+    """
+    Últimos mensajes del usuario en todos sus hilos, en orden cronológico.
+
+    Se pide en orden descendente para quedarnos con los MÁS RECIENTES cuando hay
+    más de `limite`, y se devuelve invertido para pintarlos de arriba a abajo.
+    """
+    filas = await supabase.select(
+        "mensajes",
+        {
+            "usuario_id": f"eq.{usuario_id}",
+            "select": "rol,contenido,creado_en",
+            "order": "creado_en.desc",
+            "limit": limite,
+        },
+    )
+    return list(reversed(filas))
+
+
+# --------------------------------------------------------------------------- #
+# Memoria a largo plazo
+# --------------------------------------------------------------------------- #
+
+
+async def guardar_preferencia(usuario_id: str, clave: str, valor: str) -> None:
+    """Recuerda un dato de la persona (gustos, rutinas, nombres...)."""
+    await supabase.insert(
+        "preferencias",
+        {"usuario_id": usuario_id, "clave": clave.strip().lower(), "valor": valor.strip()},
+        upsert=True,
+    )
+
+
+async def listar_preferencias(usuario_id: str, limite: int = 40) -> list[dict]:
+    return await supabase.select(
+        "preferencias",
+        {
+            "usuario_id": f"eq.{usuario_id}",
+            "select": "clave,valor",
+            "order": "actualizado_en.desc",
+            "limit": limite,
+        },
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Actividades acordadas
+# --------------------------------------------------------------------------- #
+
+
+async def crear_actividad(
+    usuario_id: str,
+    titulo: str,
+    nota: str | None = None,
+    categoria: str = "general",
+    para_cuando: str | None = None,
+    sesion_id: str | None = None,
+) -> dict:
+    filas = await supabase.insert(
+        "actividades",
+        {
+            "usuario_id": usuario_id,
+            "sesion_id": sesion_id,
+            "titulo": titulo,
+            "nota": nota,
+            "categoria": categoria,
+            "para_cuando": para_cuando,
+        },
+    )
+    return filas[0] if filas else {}
+
+
+CAMPOS_ACTIVIDAD = (
+    "id,titulo,nota,categoria,para_cuando,completada,completada_en,"
+    "motivo_no_realizada,creado_en"
+)
+
+ESTADOS_ACTIVIDAD = ("pendientes", "vencidas", "completadas", "todas")
+
+
+def _a_datetime(valor: Any) -> datetime | None:
+    """
+    Convierte una fecha ISO de PostgREST a `datetime` con zona horaria.
+
+    Postgres devuelve `timestamptz` en ISO 8601 (`2026-07-28T18:00:00+00:00`),
+    pero se aceptan también el sufijo `Z` y las fechas sin zona (que se asumen
+    UTC) para no depender del formato exacto del driver.
+    """
+    if isinstance(valor, datetime):
+        fecha = valor
+    elif isinstance(valor, str) and valor.strip():
+        try:
+            fecha = datetime.fromisoformat(valor.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+
+    return fecha if fecha.tzinfo else fecha.replace(tzinfo=timezone.utc)
+
+
+def esta_vencida(fila: dict, ahora: datetime | None = None) -> bool:
+    """
+    `True` si la actividad ya pasó su fecha y sigue sin completarse.
+
+    Se calcula aquí y no se guarda en la base: si fuera una columna habría que
+    recorrer la tabla cada cierto tiempo para mantenerla al día. Una actividad
+    sin `para_cuando` nunca vence.
+    """
+    if fila.get("completada"):
+        return False
+
+    para_cuando = _a_datetime(fila.get("para_cuando"))
+    if para_cuando is None:
+        return False
+
+    return para_cuando < (ahora or datetime.now(timezone.utc))
+
+
+async def listar_actividades(
+    usuario_id: str, estado: str = "pendientes", limite: int = 50
+) -> list[dict]:
+    """
+    Actividades del usuario, con la bandera `vencida` ya calculada.
+
+    `estado`:
+    - `pendientes` (por defecto): todo lo que no está hecho, vencido o no. La
+      app las muestra juntas y destaca las vencidas con la bandera.
+    - `vencidas`: sólo las no hechas cuya fecha ya pasó.
+    - `completadas`: sólo las hechas.
+    - `todas`: sin filtro.
+    """
+    if estado not in ESTADOS_ACTIVIDAD:
+        estado = "pendientes"
+
+    ahora = datetime.now(timezone.utc)
+    params: dict[str, Any] = {
+        "usuario_id": f"eq.{usuario_id}",
+        "select": CAMPOS_ACTIVIDAD,
+        "order": "completada.asc,para_cuando.asc,creado_en.desc",
+        "limit": limite,
+    }
+
+    if estado in ("pendientes", "vencidas"):
+        params["completada"] = "eq.false"
+    elif estado == "completadas":
+        params["completada"] = "eq.true"
+
+    if estado == "vencidas":
+        # Se filtra también en la base para que `limite` cuente sólo vencidas.
+        params["para_cuando"] = f"lt.{ahora.isoformat()}"
+
+    filas = await supabase.select("actividades", params)
+    return [{**fila, "vencida": esta_vencida(fila, ahora)} for fila in filas]
+
+
+async def marcar_actividad(usuario_id: str, actividad_id: str, completada: bool) -> dict | None:
+    """Marca/desmarca una actividad y mantiene `completada_en` en coherencia."""
+    valores = {
+        "completada": completada,
+        "completada_en": datetime.now(timezone.utc).isoformat() if completada else None,
+    }
+    filas = await supabase.update(
+        "actividades",
+        valores,
+        {
+            "id": f"eq.{actividad_id}",
+            "usuario_id": f"eq.{usuario_id}",
+            "select": CAMPOS_ACTIVIDAD,
+        },
+    )
+    if not filas:
+        return None
+    return {**filas[0], "vencida": esta_vencida(filas[0])}
+
+
+async def eliminar_actividad(usuario_id: str, actividad_id: str) -> bool:
+    """Borra una actividad del usuario. `False` si no existía (o no es suya)."""
+    filas = await supabase.delete(
+        "actividades",
+        {"id": f"eq.{actividad_id}", "usuario_id": f"eq.{usuario_id}", "select": "id"},
+    )
+    return bool(filas)
+
+
+async def registrar_motivo(usuario_id: str, actividad_id: str, motivo: str) -> dict | None:
+    """
+    Guarda por qué la persona no pudo hacer una actividad.
+
+    Es material clínico: aparece en la ficha de diagnóstico, así que se conserva
+    tal como lo contó, sin reinterpretarlo.
+    """
+    filas = await supabase.update(
+        "actividades",
+        {"motivo_no_realizada": motivo.strip()},
+        {
+            "id": f"eq.{actividad_id}",
+            "usuario_id": f"eq.{usuario_id}",
+            "select": CAMPOS_ACTIVIDAD,
+        },
+    )
+    if not filas:
+        return None
+    return {**filas[0], "vencida": esta_vencida(filas[0])}
+
+
+# --------------------------------------------------------------------------- #
+# Perfil ampliado
+# --------------------------------------------------------------------------- #
+
+
+async def actualizar_perfil(usuario_id: str, campos: dict) -> dict | None:
+    """Actualiza sólo los campos presentes (nombre, edad, ciudad, bio, foto...)."""
+    permitidos = {"nombre", "edad", "ciudad", "ocupacion", "bio", "foto_url"}
+    datos = {k: v for k, v in campos.items() if k in permitidos and v is not None}
+    if not datos:
+        return await obtener_perfil(usuario_id)
+
+    filas = await supabase.update("perfiles", datos, {"id": f"eq.{usuario_id}"})
+    return filas[0] if filas else None
+
+
+async def perfil_completo(usuario_id: str) -> dict | None:
+    filas = await supabase.select(
+        "perfiles",
+        {
+            "id": f"eq.{usuario_id}",
+            "select": "id,nombre,email,foto_url,edad,ciudad,ocupacion,bio",
+            "limit": 1,
+        },
+    )
+    return filas[0] if filas else None
+
+
+# --------------------------------------------------------------------------- #
+# Ficha de diagnóstico
+# --------------------------------------------------------------------------- #
+
+
+async def respuestas_ultima_sesion(usuario_id: str) -> dict:
+    """
+    Respuestas del test registradas en la sesión más reciente del usuario.
+
+    Vienen del blob `sesiones.estado` (lo que guarda el orquestador), con las
+    claves como string porque jsonb no admite enteros. Normalizarlas es cosa de
+    `app.chat.items.normalizar_respuestas`.
+    """
+    filas = await supabase.select(
+        "sesiones",
+        {
+            "usuario_id": f"eq.{usuario_id}",
+            "select": "estado",
+            "order": "actualizado_en.desc",
+            "limit": 1,
+        },
+    )
+    if not filas:
+        return {}
+    estado = filas[0].get("estado") or {}
+    respuestas = estado.get("respuestas") if isinstance(estado, dict) else None
+    return respuestas if isinstance(respuestas, dict) else {}
+
+
+async def estadisticas_usuario(usuario_id: str) -> dict:
+    """
+    Conteos de uso para la ficha de diagnóstico.
+
+    Los totales se piden con `count=exact` (no se traen las filas) y las fechas
+    de la primera/última conversación salen de `sesiones`, que es lo que la
+    persona percibe como "una conversación".
+    """
+    conversaciones = await supabase.contar("sesiones", {"usuario_id": f"eq.{usuario_id}"})
+    mensajes = await supabase.contar("mensajes", {"usuario_id": f"eq.{usuario_id}"})
+    creadas = await supabase.contar("actividades", {"usuario_id": f"eq.{usuario_id}"})
+    completadas = await supabase.contar(
+        "actividades", {"usuario_id": f"eq.{usuario_id}", "completada": "eq.true"}
+    )
+
+    primera = await supabase.select(
+        "sesiones",
+        {
+            "usuario_id": f"eq.{usuario_id}",
+            "select": "creado_en",
+            "order": "creado_en.asc",
+            "limit": 1,
+        },
+    )
+    ultima = await supabase.select(
+        "sesiones",
+        {
+            "usuario_id": f"eq.{usuario_id}",
+            "select": "actualizado_en",
+            "order": "actualizado_en.desc",
+            "limit": 1,
+        },
+    )
+
+    return {
+        "conversaciones": conversaciones,
+        "mensajes": mensajes,
+        "primera_conversacion": primera[0]["creado_en"] if primera else None,
+        "ultima_conversacion": ultima[0]["actualizado_en"] if ultima else None,
+        "actividades_creadas": creadas,
+        "actividades_completadas": completadas,
+        "tasa_cumplimiento": round(completadas * 100 / creadas) if creadas else 0,
+    }

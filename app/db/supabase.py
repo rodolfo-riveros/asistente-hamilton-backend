@@ -178,6 +178,22 @@ async def insert(tabla: str, filas: dict | list[dict], upsert: bool = False) -> 
     return _verificar(respuesta) or []
 
 
+async def subir_archivo(bucket: str, ruta: str, contenido: bytes, content_type: str) -> str:
+    """
+    Sube un binario a Supabase Storage y devuelve su URL pública.
+
+    Se usa `x-upsert` para poder reemplazar sin borrar antes.
+    """
+    _exigir_config()
+    respuesta = await get_client().post(
+        f"/storage/v1/object/{bucket}/{ruta}",
+        content=contenido,
+        headers=_headers_servicio({"Content-Type": content_type, "x-upsert": "true"}),
+    )
+    _verificar(respuesta)
+    return f"{settings.supabase_url.rstrip('/')}/storage/v1/object/public/{bucket}/{ruta}"
+
+
 async def update(tabla: str, valores: dict, params: dict[str, Any]) -> list[dict]:
     """Actualiza las filas que cumplan `params` (filtros en sintaxis PostgREST)."""
     _exigir_config()
@@ -188,3 +204,47 @@ async def update(tabla: str, valores: dict, params: dict[str, Any]) -> list[dict
         headers=_headers_servicio({"Prefer": "return=representation"}),
     )
     return _verificar(respuesta) or []
+
+
+async def delete(tabla: str, params: dict[str, Any]) -> list[dict]:
+    """
+    Borra las filas que cumplan `params` y devuelve las borradas.
+
+    Devolver la representación permite distinguir "no existía" (lista vacía ->
+    404 en el router) de "se borró" sin una consulta previa.
+    """
+    _exigir_config()
+    respuesta = await get_client().request(
+        "DELETE",
+        f"/rest/v1/{tabla}",
+        params=params,
+        headers=_headers_servicio({"Prefer": "return=representation"}),
+    )
+    return _verificar(respuesta) or []
+
+
+async def contar(tabla: str, params: dict[str, Any] | None = None) -> int:
+    """
+    Número de filas que cumplen `params`, sin traérselas.
+
+    Usa `Prefer: count=exact` de PostgREST y lee el total de la cabecera
+    `Content-Range` (formato `0-0/42`). Se pide un rango de una sola fila para
+    que la base cuente pero no serialice nada.
+    """
+    _exigir_config()
+    consulta = {**(params or {}), "select": "*"}
+    respuesta = await get_client().get(
+        f"/rest/v1/{tabla}",
+        params=consulta,
+        headers=_headers_servicio({"Prefer": "count=exact", "Range": "0-0"}),
+    )
+    if not respuesta.is_success:
+        _verificar(respuesta)  # levanta SupabaseError con el mensaje del cuerpo
+
+    rango = respuesta.headers.get("content-range", "")
+    total = rango.split("/")[-1] if "/" in rango else ""
+    try:
+        return int(total)
+    except ValueError:
+        logger.warning("Supabase devolvió un Content-Range inesperado: %r", rango)
+        return 0

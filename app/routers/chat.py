@@ -15,14 +15,14 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from app.chat.orchestrator import procesar_mensaje
 from app.chat.session_store import nuevo_sesion_id
 from app.config import settings
 from app.db import repositorio
-from app.deps import Usuario, usuario_opcional
+from app.deps import Usuario, usuario_actual, usuario_opcional
 from app.ml.modelo import ModeloNoDisponibleError
 from app.safety.risk_filter import detectar_riesgo, registrar_alerta_discrepancia
 
@@ -67,8 +67,15 @@ async def enviar_mensaje(
     payload: MensajeRequest,
     usuario: Usuario | None = Depends(usuario_opcional),
 ) -> MensajeResponse:
-    sesion_id = payload.sesion_id or nuevo_sesion_id()
     usuario_id = usuario.id if usuario else None
+
+    # Hilo único por persona: si la app no manda sesion_id (caso normal), se
+    # reutiliza el hilo abierto del usuario en vez de empezar una conversación
+    # nueva en cada arranque.
+    sesion_id = payload.sesion_id
+    if not sesion_id and usuario_id and settings.supabase_habilitado:
+        sesion_id = await repositorio.sesion_activa(usuario_id)
+    sesion_id = sesion_id or nuevo_sesion_id()
 
     riesgo_detectado_por_filtro = detectar_riesgo(payload.mensaje)
 
@@ -147,3 +154,115 @@ async def _persistir_turno(
         )
     except Exception:  # noqa: BLE001 - el usuario ya tiene su resultado en pantalla
         logger.exception("No se pudo guardar la evaluación de la sesión %s", sesion_id)
+
+
+# --------------------------------------------------------------------------- #
+# Continuidad: recuperar conversaciones anteriores
+# --------------------------------------------------------------------------- #
+
+
+class MensajeGuardado(BaseModel):
+    rol: str
+    contenido: str
+    creado_en: str
+
+
+class SesionResumen(BaseModel):
+    sesion_id: str
+    test_completo: bool
+    protocolo_crisis_activo: bool
+    creado_en: str
+    actualizado_en: str
+
+
+class SesionDetalle(SesionResumen):
+    mensajes: list[MensajeGuardado] = []
+
+
+def _a_resumen(fila: dict) -> SesionResumen:
+    return SesionResumen(
+        sesion_id=fila["id"],
+        test_completo=bool(fila.get("test_completo")),
+        protocolo_crisis_activo=bool(fila.get("protocolo_crisis_activo")),
+        creado_en=fila.get("creado_en") or "",
+        actualizado_en=fila.get("actualizado_en") or "",
+    )
+
+
+def _exigir_supabase() -> None:
+    if not settings.supabase_habilitado:
+        raise HTTPException(
+            status_code=503,
+            detail="El historial no está disponible: Supabase no está configurado.",
+        )
+
+
+@router.get("/sesiones", response_model=list[SesionResumen])
+async def listar_sesiones(usuario: Usuario = Depends(usuario_actual)) -> list[SesionResumen]:
+    """Conversaciones del usuario, la más reciente primero."""
+    _exigir_supabase()
+    filas = await repositorio.listar_sesiones(usuario.id)
+    return [_a_resumen(fila) for fila in filas]
+
+
+@router.get("/sesiones/ultima", response_model=SesionDetalle | None)
+async def ultima_sesion(usuario: Usuario = Depends(usuario_actual)) -> SesionDetalle | None:
+    """
+    Última conversación con sus mensajes: es lo que la app carga al abrirse para
+    que el usuario siga donde lo dejó en vez de empezar de cero.
+    """
+    _exigir_supabase()
+    filas = await repositorio.listar_sesiones(usuario.id, limite=1)
+    if not filas:
+        return None
+    return await _detalle(filas[0], usuario.id)
+
+
+@router.get("/sesiones/{sesion_id}", response_model=SesionDetalle)
+async def detalle_sesion(
+    sesion_id: str, usuario: Usuario = Depends(usuario_actual)
+) -> SesionDetalle:
+    _exigir_supabase()
+    fila = await repositorio.obtener_sesion(sesion_id, usuario.id)
+    if fila is None:
+        raise HTTPException(status_code=404, detail="Conversación no encontrada.")
+    return await _detalle(fila, usuario.id)
+
+
+async def _detalle(fila: dict, usuario_id: str) -> SesionDetalle:
+    mensajes = await repositorio.obtener_mensajes(fila["id"], usuario_id)
+    resumen = _a_resumen(fila)
+    return SesionDetalle(
+        **resumen.model_dump(),
+        mensajes=[
+            MensajeGuardado(
+                rol=m.get("rol", "assistant"),
+                contenido=m.get("contenido", ""),
+                creado_en=m.get("creado_en") or "",
+            )
+            for m in mensajes
+        ],
+    )
+
+
+@router.get("/historial", response_model=list[MensajeGuardado])
+async def historial(
+    usuario: Usuario = Depends(usuario_actual),
+    limite: int = Query(default=200, ge=1, le=500),
+) -> list[MensajeGuardado]:
+    """
+    Todo el hilo del usuario, en orden cronológico.
+
+    Es lo que la app pinta al abrirse: una sola conversación continua, como en
+    una app de mensajería, sin que el usuario tenga que elegir "sesiones".
+    """
+    _exigir_supabase()
+    filas = await repositorio.historial_usuario(usuario.id, limite=limite)
+    return [
+        MensajeGuardado(
+            rol=f.get("rol", "assistant"),
+            contenido=f.get("contenido", ""),
+            creado_en=f.get("creado_en") or "",
+        )
+        for f in filas
+    ]

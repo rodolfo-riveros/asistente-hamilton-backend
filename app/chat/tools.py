@@ -74,3 +74,117 @@ TOOLS = [
         },
     },
 ]
+
+# --- Acompañamiento cotidiano -------------------------------------------------
+# Estas tools son las que convierten al asistente en un amigo que recuerda y
+# ayuda a hacer cosas, no sólo en un cuestionario clínico.
+
+TOOLS += [
+    {
+        "name": "recordar_dato",
+        "description": (
+            "Guarda de forma permanente algo relevante que la persona contó sobre sí "
+            "misma para recordarlo en futuras conversaciones: gustos musicales, "
+            "aficiones, nombres de personas o mascotas importantes, qué le ayuda "
+            "cuando está mal, metas, rutinas, estudios o trabajo. Úsala en cuanto "
+            "aparezca el dato, sin anunciarlo."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "clave": {
+                    "type": "string",
+                    "description": (
+                        "Etiqueta corta y estable, en minúsculas. Ej: 'musica_favorita', "
+                        "'mascota', 'carrera', 'le_calma', 'meta_personal'."
+                    ),
+                },
+                "valor": {
+                    "type": "string",
+                    "description": "El dato en una frase breve, tal como lo contó.",
+                },
+            },
+            "required": ["clave", "valor"],
+        },
+    },
+    {
+        "name": "agendar_actividad",
+        "description": (
+            "Registra una actividad o plan que la persona se compromete a hacer "
+            "(caminar, dormir temprano, escribir, llamar a alguien, ir a una cita). "
+            "Sirve para hacerle seguimiento en próximas conversaciones."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "titulo": {"type": "string", "description": "Qué va a hacer, en pocas palabras."},
+                "nota": {"type": "string", "description": "Detalle o motivo, opcional."},
+                "categoria": {
+                    "type": "string",
+                    "enum": ["autocuidado", "social", "estudio", "salud", "ocio", "general"],
+                },
+                "para_cuando": {
+                    "type": "string",
+                    "description": "Fecha y hora ISO 8601 si la mencionó. Opcional.",
+                },
+            },
+            "required": ["titulo"],
+        },
+    },
+    {
+        "name": "listar_actividades",
+        "description": (
+            "Consulta las actividades pendientes que la persona acordó antes, para "
+            "preguntarle cómo le fue o retomarlas."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "registrar_motivo_actividad",
+        "description": (
+            "Guarda por qué la persona no pudo hacer una actividad que había acordado. "
+            "Úsala cuando te cuente el motivo de una actividad vencida (el id te llega "
+            "en la memoria de la persona). No la uses para suposiciones tuyas: sólo "
+            "cuando ella lo haya explicado."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "actividad_id": {
+                    "type": "string",
+                    "description": "Id de la actividad vencida, tal como aparece en la memoria.",
+                },
+                "motivo": {
+                    "type": "string",
+                    "description": "Lo que impidió hacerla, en una frase y con sus palabras.",
+                },
+            },
+            "required": ["actividad_id", "motivo"],
+        },
+    },
+    {
+        "name": "recomendar_musica",
+        "description": (
+            "Arma recomendaciones de música con enlaces reales de búsqueda en Spotify "
+            "y YouTube, según el ánimo y los gustos de la persona. Úsala cuando pida "
+            "música o cuando venga bien para acompañar el momento."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "busqueda": {
+                    "type": "string",
+                    "description": (
+                        "Qué buscar, combinando gusto y ánimo. "
+                        "Ej: 'rock en español para animarse', 'lofi para estudiar'."
+                    ),
+                },
+                "animo": {
+                    "type": "string",
+                    "enum": ["calmar", "animar", "acompañar", "concentrar", "dormir"],
+                },
+            },
+            "required": ["busqueda"],
+        },
+    },
+]

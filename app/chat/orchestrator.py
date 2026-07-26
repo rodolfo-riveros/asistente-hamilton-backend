@@ -21,9 +21,11 @@ import logging
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from app.chat.companero import enlaces_musica, memoria_de
 from app.chat.resultado import construir_resultado
 from app.chat.session_store import session_store
 from app.chat.tools import TOOLS
+from app.db import repositorio, supabase
 from app.llm.base import LLMError
 from app.llm.factory import get_proveedor
 from app.locations.centros import buscar_centros_cercanos
@@ -34,7 +36,9 @@ from app.safety.recursos import RECURSOS_NACIONALES_PE
 logger = logging.getLogger(__name__)
 
 MAX_TOOL_ITERATIONS = 8  # límite de seguridad para no entrar en loops infinitos
-MAX_TOKENS = 1024
+MAX_TOKENS = 2048
+# Mensajes recientes que viajan al modelo en cada turno del hilo continuo.
+MAX_MENSAJES_CONTEXTO = 40
 
 MENSAJE_ERROR_API = (
     "Uy, tuve un problema técnico justo ahora y no pude procesar tu mensaje. "
@@ -78,7 +82,34 @@ async def _guardar_estado(
     await session_store.set(sesion_id, estado.to_dict(), usuario_id=usuario_id)
 
 
-async def _ejecutar_tool(nombre: str, tool_input: dict, estado: EstadoSesion) -> tuple[dict, dict]:
+def recortar_historial(historial: list[dict], maximo: int = MAX_MENSAJES_CONTEXTO) -> list[dict]:
+    """
+    Deja sólo los últimos mensajes para que el hilo continuo no dispare el coste
+    ni reviente la ventana de contexto.
+
+    La continuidad de largo plazo no depende de esto: lo importante de la persona
+    vive en `preferencias` y se reinyecta vía `companero.memoria_de`.
+
+    El corte nunca puede dejar un mensaje `tool` huérfano al principio (las APIs
+    lo rechazan), así que se retrocede hasta incluir el turno del asistente que
+    pidió esa tool.
+    """
+    if len(historial) <= maximo:
+        return historial
+
+    corte = len(historial) - maximo
+    while corte > 0 and historial[corte].get("role") == "tool":
+        corte -= 1
+    return historial[corte:]
+
+
+async def _ejecutar_tool(
+    nombre: str,
+    tool_input: dict,
+    estado: EstadoSesion,
+    usuario_id: str | None = None,
+    sesion_id: str | None = None,
+) -> tuple[dict, dict]:
     """
     Ejecuta la función real del backend para una tool_use dada.
 
@@ -140,6 +171,61 @@ async def _ejecutar_tool(nombre: str, tool_input: dict, estado: EstadoSesion) ->
         señales["resultado_ml"] = resultado
         return resultado, señales
 
+    # --- Capacidades de acompañante ---------------------------------------
+    # Todas necesitan usuario identificado; sin sesión iniciada se responde algo
+    # que el modelo pueda explicar sin romper la conversación.
+    if nombre in {
+        "recordar_dato",
+        "agendar_actividad",
+        "listar_actividades",
+        "registrar_motivo_actividad",
+    }:
+        if not usuario_id:
+            return {"error": "no_hay_usuario", "detalle": "La persona no ha iniciado sesión."}, señales
+
+    try:
+        if nombre == "recordar_dato":
+            await repositorio.guardar_preferencia(
+                usuario_id, str(tool_input.get("clave", "")), str(tool_input.get("valor", ""))
+            )
+            return {"ok": True, "recordado": tool_input.get("clave")}, señales
+
+        if nombre == "agendar_actividad":
+            actividad = await repositorio.crear_actividad(
+                usuario_id=usuario_id,
+                titulo=str(tool_input.get("titulo", "")).strip(),
+                nota=tool_input.get("nota"),
+                categoria=str(tool_input.get("categoria") or "general"),
+                para_cuando=tool_input.get("para_cuando"),
+                sesion_id=sesion_id,
+            )
+            señales["actividad_creada"] = True
+            return {"ok": True, "actividad": actividad.get("titulo")}, señales
+
+        if nombre == "listar_actividades":
+            pendientes = await repositorio.listar_actividades(usuario_id, estado="pendientes")
+            return {"pendientes": pendientes}, señales
+
+        if nombre == "registrar_motivo_actividad":
+            actividad_id = str(tool_input.get("actividad_id", "")).strip()
+            motivo = str(tool_input.get("motivo", "")).strip()
+            if not actividad_id or not motivo:
+                return {"error": "faltan_datos", "detalle": "Se necesita actividad_id y motivo."}, señales
+
+            actividad = await repositorio.registrar_motivo(usuario_id, actividad_id, motivo)
+            if actividad is None:
+                return (
+                    {"error": "no_encontrada", "detalle": "Esa actividad no existe o no es suya."},
+                    señales,
+                )
+            return {"ok": True, "actividad": actividad.get("titulo"), "motivo": motivo}, señales
+    except supabase.SupabaseError as exc:
+        logger.exception("Fallo de base de datos ejecutando la tool %s", nombre)
+        return {"error": "base_de_datos", "detalle": exc.mensaje}, señales
+
+    if nombre == "recomendar_musica":
+        return enlaces_musica(str(tool_input.get("busqueda", ""))), señales
+
     logger.warning("Tool desconocida solicitada por el modelo: %s", nombre)
     return {"error": f"tool desconocida: {nombre}"}, señales
 
@@ -176,11 +262,15 @@ async def procesar_mensaje(
     resultado_ml: dict | None = None
     texto_final = ""
 
+    # El hilo es continuo, así que al modelo se le manda el prompt + lo que
+    # recordamos de la persona, y sólo la ventana reciente de mensajes.
+    system = SYSTEM_PROMPT + await memoria_de(usuario_id)
+
     for _ in range(MAX_TOOL_ITERATIONS):
         try:
             respuesta = await proveedor.generar(
-                system=SYSTEM_PROMPT,
-                mensajes=estado.historial,
+                system=system,
+                mensajes=recortar_historial(estado.historial),
                 tools=TOOLS,
                 max_tokens=MAX_TOKENS,
             )
@@ -198,7 +288,13 @@ async def procesar_mensaje(
             break
 
         for llamada in respuesta.tool_calls:
-            resultado, señales = await _ejecutar_tool(llamada.nombre, llamada.argumentos, estado)
+            resultado, señales = await _ejecutar_tool(
+                llamada.nombre,
+                llamada.argumentos,
+                estado,
+                usuario_id=usuario_id,
+                sesion_id=sesion_id,
+            )
             if señales.get("ubicacion_solicitada"):
                 ubicacion_solicitada = True
             if señales.get("resultado_ml"):

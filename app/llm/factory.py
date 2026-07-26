@@ -33,12 +33,14 @@ class Preset:
 # Modelos por defecto elegidos por soportar tool-calling, que es imprescindible:
 # el asistente registra cada respuesta del test y dispara el cálculo del SVM.
 PRESETS: dict[str, Preset] = {
-    "deepseek": Preset("https://api.deepseek.com/v1", "deepseek-chat"),
+    "deepseek": Preset("https://api.deepseek.com/v1", "deepseek-v4-flash"),
     "nvidia": Preset("https://integrate.api.nvidia.com/v1", "meta/llama-3.3-70b-instruct"),
     "openai": Preset("https://api.openai.com/v1", "gpt-4o-mini"),
     "groq": Preset("https://api.groq.com/openai/v1", "llama-3.3-70b-versatile"),
     "openrouter": Preset("https://openrouter.ai/api/v1", "meta-llama/llama-3.3-70b-instruct"),
     "ollama": Preset("http://localhost:11434/v1", "llama3.1"),
+    # Google expone una capa compatible con OpenAI, así que no hace falta SDK.
+    "gemini": Preset("https://generativelanguage.googleapis.com/v1beta/openai/", "gemini-2.5-flash"),
     "openai_compat": Preset("", ""),
 }
 
@@ -99,7 +101,8 @@ def crear_proveedor() -> ProveedorLLM:
         if not key:
             continue
         prov = _crear_un_proveedor(
-            provider_name=None,
+            # Cada respaldo puede ser de otro proveedor (p. ej. deepseek -> gemini).
+            provider_name=getattr(settings, f"llm_{nivel}_provider", "") or None,
             api_key=key,
             base_url=getattr(settings, f"llm_{nivel}_base_url", ""),
             model=getattr(settings, f"llm_{nivel}_model", ""),

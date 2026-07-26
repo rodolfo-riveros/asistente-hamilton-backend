@@ -17,7 +17,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.db import supabase
 from app.llm import factory as llm_factory
-from app.routers import auth, chat, evaluaciones, health, voz
+from app.routers import (
+    actividades,
+    auth,
+    chat,
+    diagnostico,
+    evaluaciones,
+    health,
+    perfil,
+    voz,
+)
 from app.voz import stt
 
 logging.basicConfig(
@@ -73,6 +82,9 @@ app.include_router(auth.router)
 app.include_router(chat.router)
 app.include_router(evaluaciones.router)
 app.include_router(voz.router)
+app.include_router(perfil.router)
+app.include_router(actividades.router)
+app.include_router(diagnostico.router)
 
 # Puntos de extensión previstos (ver README):
 #   - POST /chat/iniciar   -> mensaje de bienvenida sin esperar input del usuario

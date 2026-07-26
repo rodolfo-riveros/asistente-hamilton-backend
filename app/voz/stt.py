@@ -72,7 +72,14 @@ async def transcribir(
     if not audio:
         raise STTError("El audio llegó vacío.", status_code=400)
 
-    datos = {"model": settings.stt_model}
+    datos = {
+        "model": settings.stt_model,
+        # Sin temperatura el modelo "inventa" menos cuando el audio es pobre.
+        "temperature": "0",
+        # Contexto de dominio: mejora bastante el reconocimiento de vocabulario
+        # clínico y de nombres locales que si no salen deformados.
+        "prompt": settings.stt_prompt,
+    }
     if settings.stt_idioma:
         datos["language"] = settings.stt_idioma
 

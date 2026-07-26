@@ -83,6 +83,10 @@ create index if not exists evaluaciones_usuario_idx
 create or replace function public.tocar_actualizado_en()
 returns trigger
 language plpgsql
+security invoker
+-- search_path vacío a propósito: sin fijarlo, un rol podría anteponer un
+-- esquema propio y secuestrar la resolución de nombres dentro de la función.
+set search_path = ''
 as $$
 begin
   new.actualizado_en = now();

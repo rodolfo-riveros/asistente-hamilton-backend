@@ -34,9 +34,12 @@ class Settings(BaseSettings):
 
     # --- Fallback / cadena de respaldo ---
     # Se intentan en orden si el primario falla.
+    # Cada nivel de respaldo puede ser de OTRO proveedor distinto al primario.
+    llm_fallback_provider: str = ""
     llm_fallback_api_key: str = ""
     llm_fallback_model: str = ""
     llm_fallback_base_url: str = ""
+    llm_tertiary_provider: str = ""
     llm_tertiary_api_key: str = ""
     llm_tertiary_model: str = ""
     llm_tertiary_base_url: str = ""
@@ -51,6 +54,14 @@ class Settings(BaseSettings):
     stt_api_key: str = ""
     stt_model: str = "whisper-1"
     stt_idioma: str = "es"
+    # Pista de contexto para el transcriptor: sube bastante la precisión con el
+    # vocabulario de esta app (síntomas, escala de Hamilton, sitios de Cusco).
+    stt_prompt: str = (
+        "Conversación en español sobre estado de ánimo y bienestar emocional. "
+        "Vocabulario frecuente: tristeza, ansiedad, insomnio, culpa, cansancio, "
+        "desánimo, apetito, concentración, escala de Hamilton, psicólogo, "
+        "Cusco, Wanchaq, Línea 113, SAMU."
+    )
 
     # --- Google Places (opcional) ---
     google_places_api_key: str | None = None

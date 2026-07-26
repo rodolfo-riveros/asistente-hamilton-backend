@@ -88,7 +88,8 @@ orquestador ni en el estado de las sesiones.
 
 | `LLM_PROVIDER` | Preset de URL | Modelo por defecto |
 | --- | --- | --- |
-| `deepseek` | `https://api.deepseek.com/v1` | `deepseek-chat` |
+| `deepseek` | `https://api.deepseek.com/v1` | `deepseek-v4-flash` |
+| `gemini` | `https://generativelanguage.googleapis.com/v1beta/openai/` | `gemini-2.5-flash` |
 | `nvidia` | `https://integrate.api.nvidia.com/v1` | `meta/llama-3.3-70b-instruct` |
 | `openai` | `https://api.openai.com/v1` | `gpt-4o-mini` |
 | `groq` | `https://api.groq.com/openai/v1` | `llama-3.3-70b-versatile` |
@@ -101,9 +102,22 @@ orquestador ni en el estado de las sesiones.
 compatible con OpenAI que no esté en la tabla, usa `openai_compat`.
 
 > **El modelo que elijas debe soportar tool-calling.** El asistente registra
-> cada respuesta del test y dispara el cálculo del SVM mediante 5 tools; un
-> modelo sin function calling mantendrá la conversación pero nunca cerrará la
-> evaluación.
+> cada respuesta del test y dispara el cálculo del SVM mediante tools; un modelo
+> que no las llame mantendrá la conversación pero nunca cerrará la evaluación.
+>
+> Comprobado el 26/07/2026: `deepseek-v4-flash`, `deepseek-v4-pro`,
+> `gemini-2.5-flash` y `meta/llama-3.3-70b-instruct` llaman a las tools sin
+> problemas. `openai/gpt-oss-20b` de NVIDIA **no** lo hace de forma fiable.
+
+### Cadena de respaldo
+
+Si el primario falla (cuota, caída, timeout) se prueba el siguiente:
+
+```
+LLM_PROVIDER=deepseek            LLM_API_KEY=...
+LLM_FALLBACK_PROVIDER=gemini     LLM_FALLBACK_API_KEY=...
+LLM_TERTIARY_PROVIDER=nvidia     LLM_TERTIARY_API_KEY=...
+```
 
 ### Voz
 
@@ -435,3 +449,49 @@ resto del código, gracias a que `main.py` ya está estructurado para incluir
 routers adicionales.
 #   a s i s t e n t e - h a m i l t o n - b a c k e n d  
  
+---
+
+## 10. Acompañamiento continuo (v2)
+
+El asistente dejó de ser sólo un test: mantiene **un hilo único por persona**,
+como una app de mensajería, y recuerda entre conversaciones.
+
+### Hilo continuo
+
+- `POST /chat/mensaje` sin `sesion_id` reutiliza el hilo abierto del usuario en
+  lugar de empezar uno nuevo. La app ya no gestiona sesiones.
+- `GET /chat/historial` devuelve toda la conversación en orden cronológico.
+- Al modelo sólo se le envían los últimos `MAX_MENSAJES_CONTEXTO` (40) mensajes,
+  con `recortar_historial`, para que el coste no crezca sin control. La
+  continuidad de largo plazo no depende de esa ventana, sino de la memoria.
+
+### Memoria
+
+`app/chat/companero.py` arma un bloque que se añade al system prompt con el
+perfil, lo que el asistente ha ido aprendiendo (`preferencias`) y las
+actividades pendientes. Por eso recuerda gustos y planes aunque el historial
+reciente ya se haya recortado.
+
+### Tools nuevas
+
+| Tool | Qué hace |
+| --- | --- |
+| `recordar_dato` | Guarda un gusto, afición, meta o dato personal en `preferencias`. |
+| `agendar_actividad` | Registra un plan acordado en `actividades`. |
+| `listar_actividades` | Consulta lo pendiente para preguntar cómo le fue. |
+| `recomendar_musica` | Devuelve enlaces reales de búsqueda en Spotify y YouTube. |
+
+`recomendar_musica` no necesita API ni OAuth: construye URLs de búsqueda, que
+siempre llevan a resultados vivos (un id de playlist puede desaparecer).
+
+### Perfil y actividades
+
+- `GET/PUT /perfil` — nombre, edad, ciudad, ocupación y bio.
+- `POST /perfil/foto` — sube la imagen al bucket `avatares` de Supabase Storage.
+- `GET /actividades`, `PATCH /actividades/{id}` — planes acordados en el chat.
+
+### Migración
+
+Aplicar `supabase/schema_v2.sql` en el SQL Editor (idempotente). Añade las
+columnas nuevas de `perfiles`, las tablas `preferencias` y `actividades`, sus
+políticas RLS y el bucket de avatares.
