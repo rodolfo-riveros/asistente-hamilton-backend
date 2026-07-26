@@ -58,11 +58,11 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(
     lifespan=lifespan,
-    title="Asistente Hamilton",
+    title="Aurora — backend",
     description=(
-        "Backend conversacional que reemplaza el formulario de Streamlit del "
-        "test de depresión de Hamilton por un asistente con Claude (Anthropic) "
-        "y un modelo SVM entrenado para clasificar el nivel de depresión."
+        "Backend conversacional de Aurora: reemplaza el formulario de Streamlit del "
+        "test de depresión de Hamilton por una asistente conversacional (proveedor "
+        "de IA configurable) y un modelo SVM entrenado para clasificar el nivel de depresión."
     ),
     version="0.1.0",
 )
