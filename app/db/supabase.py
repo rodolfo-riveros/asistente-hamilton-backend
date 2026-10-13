@@ -73,12 +73,19 @@ async def cerrar_client() -> None:
         _client = None
 
 
+def _es_jwt(clave: str) -> bool:
+    """Las claves heredadas (`service_role`) son JWT (`eyJ…`); las nuevas `sb_secret_…` no."""
+    return clave.startswith("eyJ") and clave.count(".") == 2
+
+
 def _headers_servicio(extra: dict[str, str] | None = None) -> dict[str, str]:
-    headers = {
-        "apikey": settings.supabase_service_role_key,
-        "Authorization": f"Bearer {settings.supabase_service_role_key}",
-        "Content-Type": "application/json",
-    }
+    clave = settings.supabase_service_role_key
+    headers = {"apikey": clave, "Content-Type": "application/json"}
+    # Proyectos nuevos de Supabase usan claves `sb_secret_…`, que NO son JWT y
+    # van sólo en `apikey` (el gateway las convierte en rol de servicio). Las
+    # claves heredadas `service_role` (JWT) también se mandan como Bearer.
+    if _es_jwt(clave):
+        headers["Authorization"] = f"Bearer {clave}"
     if extra:
         headers.update(extra)
     return headers
