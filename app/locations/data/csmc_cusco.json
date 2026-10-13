@@ -1,22 +1,42 @@
 [
   {
-    "nombre": "CSMC Amanecer",
-    "provincia": null,
-    "distrito": "Santiago",
-    "direccion": "Av. La Cultura Mz. B Lote 5, Santiago",
-    "telefono": "084234567",
+    "nombre": "Centro de Salud Mental Comunitario Cusco",
+    "provincia": "Cusco",
+    "distrito": "Wanchaq",
+    "direccion": "Calle Osvaldo Baca 211, Urb. Magisterio (cerca al Parque El Trébol), Wanchaq",
+    "telefono": "991069763",
     "lat": null,
     "lon": null,
-    "fuente": "gob.pe/10942 (verificado 2026-07-25)"
+    "fuente": "Minsa · gob.pe/10942 (revisado 2026-10-12)"
   },
   {
-    "nombre": "CSMC Wiñay Kausay",
-    "provincia": null,
-    "distrito": "San Sebastián",
-    "direccion": "Jr. Los Andes s/n, San Sebastián",
-    "telefono": "984123456",
+    "nombre": "Centro de Salud Mental Comunitario Santiago",
+    "provincia": "Cusco",
+    "distrito": "Santiago",
+    "direccion": "Calle Reverendo Padre Manya s/n (ex Terminal de Quillabamba), Santiago",
+    "telefono": "084386029",
     "lat": null,
     "lon": null,
-    "fuente": "gob.pe/10942 (verificado 2026-07-25)"
+    "fuente": "Directorio institucional amlq.org.pe (revisado 2026-10-12)"
+  },
+  {
+    "nombre": "Hospital Regional del Cusco",
+    "provincia": "Cusco",
+    "distrito": "Wanchaq",
+    "direccion": "Av. de la Cultura s/n, Wanchaq",
+    "telefono": "084227661",
+    "lat": null,
+    "lon": null,
+    "fuente": "gob.pe › Hospital Regional Cusco › Sedes (revisado 2026-10-12)"
+  },
+  {
+    "nombre": "Hospital Antonio Lorena",
+    "provincia": "Cusco",
+    "distrito": "Santiago",
+    "direccion": "Calle Carlos Ugarte s/n, Urb. Primavera, Huancaro, Santiago",
+    "telefono": "084224712",
+    "lat": null,
+    "lon": null,
+    "fuente": "gob.pe › Hospital Antonio Lorena › Contacto (revisado 2026-10-12)"
   }
 ]
