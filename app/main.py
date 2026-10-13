@@ -27,7 +27,7 @@ from app.routers import (
     perfil,
     voz,
 )
-from app.voz import stt
+from app.voz import stt, tts
 
 logging.basicConfig(
     level=logging.INFO,
@@ -47,6 +47,11 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         )
     if not settings.stt_habilitado:
         logger.info("Voz: transcripción desactivada (define STT_BASE_URL para habilitarla).")
+    if not settings.tts_habilitado:
+        logger.info(
+            "Voz: síntesis en la nube desactivada (define AZURE_SPEECH_KEY y "
+            "AZURE_SPEECH_REGION); la app usará la voz del teléfono."
+        )
 
     yield
 
@@ -54,6 +59,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     await supabase.cerrar_client()
     await llm_factory.cerrar_proveedor()
     await stt.cerrar_cliente()
+    await tts.cerrar_cliente()
 
 
 app = FastAPI(

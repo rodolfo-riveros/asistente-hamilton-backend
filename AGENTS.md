@@ -41,7 +41,8 @@
   Nunca fuerza respuesta automática. No registra el texto completo del mensaje.
 - **`app/chat/resultado.py`** — traduce salida del SVM al contrato de la app (`{score, nivel, interpretacion, recomendaciones, fecha, sesion_id}`).
 - **`app/locations/centros.py`** — 2 niveles: Google Places API (si hay key) → directorio local.
-- **`app/voz/stt.py`** — solo STT. Contrato OpenAI `/audio/transcriptions`. TTS lo hace el teléfono con `expo-speech`.
+- **`app/voz/stt.py`** — STT. Contrato OpenAI `/audio/transcriptions`.
+- **`app/voz/tts.py`** — TTS opcional con Azure AI Speech (SSML calmado, MP3). Por defecto la app habla con `expo-speech`; sólo usa esto con `EXPO_PUBLIC_TTS_NUBE=true` y cae al teléfono si falla.
 
 ## APIs externas
 
@@ -49,6 +50,7 @@
 - **Supabase**: opcional. Sin ella → sesiones en memoria, `/auth/*` y `/evaluaciones` devuelven 503.
 - **Google Places**: opcional. Sin ella → solo directorio local `app/locations/data/csmc_cusco.json`.
 - **STT**: opcional. Sin `STT_BASE_URL` → `POST /voz/transcribir` devuelve 503.
+- **Azure AI Speech (TTS)**: opcional. Sin `AZURE_SPEECH_KEY`/`AZURE_SPEECH_REGION` → `POST /voz/sintetizar` devuelve 503.
 
 ## Reglas críticas
 
@@ -71,8 +73,10 @@
 |---|---|---|
 | `GET /salud` | No | Estado del servicio (no expone claves) |
 | `POST /auth/register` | No | `{nombre, email, password}`. Si Supabase tiene "Confirm email" → 202 sin token |
-| `POST /auth/login` | No | `{email, password}` |
+| `POST /auth/login` | No | `{email, password}` → `{token, user, refresh_token, expires_in}` |
+| `POST /auth/refresh` | No | `{refresh_token}` → igual que login. 401 si caducó |
 | `GET /auth/me` | Sí | Datos del usuario autenticado |
 | `POST /chat/mensaje` | Opcional | Token opcional → sesión anónima. Admite `sesion_id`, `lat`, `lon` |
 | `GET /evaluaciones` | Sí | Histórico del usuario, más reciente primero |
 | `POST /voz/transcribir` | Opcional | Multipart con `audio`. 25 MB máx |
+| `POST /voz/sintetizar` | Sí | `{texto, voz?, ritmo?}` → `audio/mpeg`. ≤1500 caracteres. 503 sin Azure |

@@ -13,6 +13,7 @@ usa `guardar_mensajes`, que registra el fallo y no interrumpe la conversación.
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 
@@ -91,6 +92,29 @@ async def listar_sesiones(usuario_id: str, limite: int = 20) -> list[dict]:
             "limit": limite,
         },
     )
+
+
+async def sesion_utilizable(sesion_id: str, usuario_id: str | None) -> bool:
+    """
+    ¿Puede este usuario (o un anónimo) continuar la sesión `sesion_id`?
+
+    - id que no es UUID -> no (PostgREST fallaría con la columna uuid).
+    - sesión inexistente -> sí (se creará con ese id, como antes).
+    - sesión anónima -> sí (un usuario puede "adoptar" su charla anónima).
+    - sesión de otra persona -> no.
+    """
+    try:
+        uuid.UUID(str(sesion_id))
+    except ValueError:
+        return False
+
+    filas = await supabase.select(
+        "sesiones", {"id": f"eq.{sesion_id}", "select": "usuario_id", "limit": 1}
+    )
+    if not filas:
+        return True
+    dueno = filas[0].get("usuario_id")
+    return dueno is None or dueno == usuario_id
 
 
 async def obtener_sesion(sesion_id: str, usuario_id: str) -> dict | None:
@@ -411,10 +435,19 @@ async def registrar_motivo(usuario_id: str, actividad_id: str, motivo: str) -> d
 # --------------------------------------------------------------------------- #
 
 
-async def actualizar_perfil(usuario_id: str, campos: dict) -> dict | None:
-    """Actualiza sólo los campos presentes (nombre, edad, ciudad, bio, foto...)."""
+async def actualizar_perfil(
+    usuario_id: str, campos: dict, permitir_nulos: bool = False
+) -> dict | None:
+    """
+    Actualiza sólo los campos presentes (nombre, edad, ciudad, bio, foto...).
+
+    Con `permitir_nulos=True` un `None` explícito borra el dato (lo usa
+    `PUT /perfil` cuando la persona vacía un campo); si no, se ignora.
+    """
     permitidos = {"nombre", "edad", "ciudad", "ocupacion", "bio", "foto_url"}
-    datos = {k: v for k, v in campos.items() if k in permitidos and v is not None}
+    datos = {
+        k: v for k, v in campos.items() if k in permitidos and (permitir_nulos or v is not None)
+    }
     if not datos:
         return await obtener_perfil(usuario_id)
 

@@ -24,4 +24,5 @@ async def salud() -> dict:
         },
         "supabase": settings.supabase_habilitado,
         "voz": settings.stt_habilitado,
+        "tts": settings.tts_habilitado,
     }

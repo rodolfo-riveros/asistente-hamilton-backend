@@ -73,6 +73,12 @@ async def enviar_mensaje(
     # reutiliza el hilo abierto del usuario en vez de empezar una conversación
     # nueva en cada arranque.
     sesion_id = payload.sesion_id
+    if sesion_id and settings.supabase_habilitado:
+        # Un sesion_id ajeno (o mal formado) se ignora: nadie puede leer ni
+        # escribir en el hilo de otra persona mandando su id.
+        if not await repositorio.sesion_utilizable(sesion_id, usuario_id):
+            logger.info("sesion_id ignorado: no pertenece al usuario o no es válido")
+            sesion_id = None
     if not sesion_id and usuario_id and settings.supabase_habilitado:
         sesion_id = await repositorio.sesion_activa(usuario_id)
     sesion_id = sesion_id or nuevo_sesion_id()

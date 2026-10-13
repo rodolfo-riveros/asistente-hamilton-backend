@@ -75,7 +75,14 @@ async def editar_perfil(
 ) -> PerfilResponse:
     _exigir_supabase()
     try:
-        perfil = await repositorio.actualizar_perfil(usuario.id, cambios.model_dump())
+        # Sólo los campos que la app mandó; `null` o "" borran el dato (el
+        # nombre nunca se borra: el asistente lo necesita para dirigirse a ti).
+        enviados = cambios.model_dump(exclude_unset=True)
+        datos = {k: (v.strip() if isinstance(v, str) else v) for k, v in enviados.items()}
+        datos = {k: (None if v == "" else v) for k, v in datos.items()}
+        if datos.get("nombre", "") is None:
+            datos.pop("nombre")
+        perfil = await repositorio.actualizar_perfil(usuario.id, datos, permitir_nulos=True)
     except supabase.SupabaseError as exc:
         raise HTTPException(status_code=502, detail="No se pudo guardar tu perfil.") from exc
 

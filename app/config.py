@@ -63,6 +63,13 @@ class Settings(BaseSettings):
         "Cusco, Wanchaq, Línea 113, SAMU."
     )
 
+    # --- Voz: síntesis (TTS) en la nube, Azure AI Speech ---
+    # Vacío = POST /voz/sintetizar responde 503 y la app usa la voz del teléfono.
+    # La clave vive SOLO aquí: nunca en la app móvil.
+    azure_speech_key: str = ""
+    azure_speech_region: str = ""  # p. ej. "eastus", "brazilsouth"
+    tts_voz: str = "es-PE-CamilaNeural"
+
     # --- Google Places (opcional) ---
     google_places_api_key: str | None = None
 
@@ -98,6 +105,11 @@ class Settings(BaseSettings):
     def stt_habilitado(self) -> bool:
         """True si hay un endpoint de transcripción configurado."""
         return bool(self.stt_base_url.strip())
+
+    @property
+    def tts_habilitado(self) -> bool:
+        """True si hay clave y región de Azure AI Speech para la voz en la nube."""
+        return bool(self.azure_speech_key.strip() and self.azure_speech_region.strip())
 
     @property
     def supabase_habilitado(self) -> bool:

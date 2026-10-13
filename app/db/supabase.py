@@ -140,6 +140,18 @@ async def auth_sign_in(email: str, password: str) -> dict:
     return _verificar(respuesta) or {}
 
 
+async def auth_refresh(refresh_token: str) -> dict:
+    """Canjea un refresh_token por una sesión nueva (access + refresh rotados)."""
+    _exigir_config()
+    respuesta = await get_client().post(
+        "/auth/v1/token",
+        params={"grant_type": "refresh_token"},
+        json={"refresh_token": refresh_token},
+        headers=_headers_servicio(),
+    )
+    return _verificar(respuesta) or {}
+
+
 async def auth_get_user(access_token: str) -> dict:
     """Valida un access_token contra Supabase y devuelve el usuario dueño."""
     _exigir_config()

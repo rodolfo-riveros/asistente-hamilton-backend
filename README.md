@@ -126,8 +126,17 @@ LLM_TERTIARY_PROVIDER=nvidia     LLM_TERTIARY_API_KEY=...
   servicio compatible (Whisper de OpenAI, Groq, faster-whisper local, endpoints
   de NVIDIA que lo implementen). Se configura con `STT_BASE_URL`, `STT_API_KEY`,
   `STT_MODEL` y `STT_IDIOMA`. Vacío = dictado desactivado (`503`).
-- **Hablar (TTS)**: no pasa por el backend. Lo sintetiza el propio teléfono con
-  `expo-speech`: gratis, sin latencia de red y sin consumir cuota.
+- **Hablar (TTS)**: por defecto no pasa por el backend: lo sintetiza el propio
+  teléfono con `expo-speech` (gratis, sin red, sin cuota).
+- **Hablar con voz neuronal (opcional)**: `POST /voz/sintetizar` (Bearer
+  obligatorio) recibe `{"texto": "...", "voz"?: "es-PE-CamilaNeural",
+  "ritmo"?: "pausada" | "normal"}` y devuelve `200 audio/mpeg` (MP3 mono 24 kHz
+  48 kbps) generado con **Azure AI Speech** (SSML con prosodia calmada:
+  `pausada` = rate -8 %, pitch -2 %, y una pausa extra entre oraciones).
+  Máximo 1500 caracteres (`413`). Se configura con `AZURE_SPEECH_KEY`,
+  `AZURE_SPEECH_REGION` y `TTS_VOZ` (opcional); sin ellas responde `503` con
+  `detail` y la app usa la voz del teléfono. Errores de Azure nunca se reenvían
+  como `401` (la app cerraría la sesión): `502`/`503`/`504`.
 
 Si tu proveedor de transcripción usa otro contrato (por ejemplo Riva por gRPC),
 el único archivo a tocar es `app/voz/stt.py`.
@@ -406,7 +415,29 @@ ellos.
 
 ---
 
-## 8. Notas para producción
+## 8. Despliegue en Render
+
+Variables de entorno del servicio (Dashboard → servicio → Environment). Las
+mismas que `.env.example`; las imprescindibles para la app móvil:
+
+| Variable | Obligatoria | Nota |
+|---|---|---|
+| `LLM_PROVIDER`, `LLM_API_KEY` (+ `LLM_FALLBACK_*`) | Sí | Proveedor de IA |
+| `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | Sí | Sin ellas `/auth/*` responde 503 |
+| `STT_BASE_URL`, `STT_API_KEY`, `STT_MODEL` | Para dictar | Sin ellas `/voz/transcribir` → 503 |
+| `AZURE_SPEECH_KEY`, `AZURE_SPEECH_REGION` | Para voz neuronal | Sin ellas `/voz/sintetizar` → 503 (la app usa la voz del teléfono) |
+| `TTS_VOZ` | No | Por defecto `es-PE-CamilaNeural` |
+| `ALLOWED_ORIGINS`, `ENVIRONMENT` | No | `*` / `production` |
+
+Tras desplegar, `GET /salud` debe mostrar `"supabase": true` y, si configuraste
+Azure, `"tts": true`. En el plan gratis de Render el servicio se duerme: la
+primera petición tarda ~50 s (la app lo avisa y amplía su timeout).
+
+En Supabase → Authentication → Providers → Email conviene desactivar
+"Confirm email" para el flujo móvil (si no, el registro responde `202` sin token
+y hay que confirmar el correo antes de entrar).
+
+## 8.1 Notas para producción
 
 - **Sesiones**: `app/chat/session_store.py` define la interfaz
   (`get`/`set`/`append`/`exists`) usada por el orquestador. La implementación
@@ -447,8 +478,6 @@ ellos.
 Ambos son agregables como nuevos archivos en `app/routers/` sin tocar el
 resto del código, gracias a que `main.py` ya está estructurado para incluir
 routers adicionales.
-#   a s i s t e n t e - h a m i l t o n - b a c k e n d  
- 
 ---
 
 ## 10. Acompañamiento continuo (v2)
