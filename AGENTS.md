@@ -27,14 +27,19 @@
    Usa `OpenAICompatProvider` para todo excepto `anthropic` (SDK oficial).
    **Cadena de respaldo**: si `LLM_FALLBACK_API_KEY` está definida, `crear_proveedor()` devuelve
    un `FallbackProvider` que prueba primario → fallback → terciario en orden hasta que uno responda.
-- **`app/chat/orchestrator.py`** — loop de tool-use (máx. 8 iteraciones, 1024 tokens).
-  Historial en formato neutro JSON-serializable.
+- **`app/chat/orchestrator.py`** — loop de tool-use (máx. 8 iteraciones, 2048 tokens).
+  Historial en formato neutro JSON-serializable. La ubicación del turno va en el system
+  prompt (bloque `UBICACIÓN`), nunca en el texto del usuario. Acumula `acciones` del turno.
+- **`app/chat/acciones.py`** — botones del chat (contrato v4): `musica`, `recurso`, `centro`,
+  `buscar_mapa`, `llamar`, `actividad`. `RECURSOS_APP` = ids de `src/screens/recursos/contenido.ts`
+  de la app; si cambian allí, cambiar aquí.
 - **`app/chat/session_store.py`** — `MemorySessionStore` (dev) o `SupabaseSessionStore` (si hay credenciales).
   Sesiones se pierden al reiniciar sin Supabase. Interfaz async.
 - **`app/db/supabase.py`** — cliente async httpx contra GoTrue + PostgREST.
   Usa `SUPABASE_SERVICE_ROLE_KEY` (ignora RLS). Aislamiento por `usuario_id` en `repositorio.py`.
 - **`app/db/repositorio.py`** — escrituras best-effort (no tiran la conversación si fallan).
-- **`app/prompts/system_prompt.py`** — texto clínico, NO ALTERAR sin el equipo de psicología.
+- **`app/prompts/system_prompt.py`** — tono "amiga que escucha" + test muy espaciado (v4).
+  Los 17 ítems, sus escalas y la PARTE 2 (crisis) NO SE ALTERAN sin el equipo de psicología.
 - **`app/ml/modelo.py`** — pipeline SVM. NO ALTERAR, sustenta la tesis.
   `calcular_resultado()` exige exactamente 17 enteros.
 - **`app/safety/risk_filter.py`** — filtro determinístico complementario. No reemplaza al LLM.
@@ -76,7 +81,14 @@
 | `POST /auth/login` | No | `{email, password}` → `{token, user, refresh_token, expires_in}` |
 | `POST /auth/refresh` | No | `{refresh_token}` → igual que login. 401 si caducó |
 | `GET /auth/me` | Sí | Datos del usuario autenticado |
-| `POST /chat/mensaje` | Opcional | Token opcional → sesión anónima. Admite `sesion_id`, `lat`, `lon` |
+| `POST /chat/mensaje` | Opcional | Token opcional → sesión anónima. Admite `sesion_id`, `lat`, `lon`. Devuelve siempre `acciones: Accion[]` |
+| `GET /chat/historial` | Sí | Hilo completo; cada mensaje con `acciones` (`null` → `[]`) |
 | `GET /evaluaciones` | Sí | Histórico del usuario, más reciente primero |
 | `POST /voz/transcribir` | Opcional | Multipart con `audio`. 25 MB máx |
 | `POST /voz/sintetizar` | Sí | `{texto, voz?, ritmo?}` → `audio/mpeg`. ≤1500 caracteres. 503 sin Azure |
+
+## Migraciones
+
+`supabase/schema.sql` → `schema_v2.sql` → `schema_v3.sql` → `schema_v4.sql` (`mensajes.acciones jsonb`).
+`supabase/instalar_todo.sql` las junta todas (proyecto nuevo). Todas idempotentes.
+El backend tolera que v4 aún no esté aplicada: reintenta sin `acciones` y avisa una vez en el log.

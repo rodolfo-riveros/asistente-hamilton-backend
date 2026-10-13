@@ -21,6 +21,7 @@ import logging
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from app.chat import acciones as acc
 from app.chat.companero import enlaces_musica, memoria_de
 from app.chat.resultado import construir_resultado
 from app.chat.session_store import session_store
@@ -103,20 +104,48 @@ def recortar_historial(historial: list[dict], maximo: int = MAX_MENSAJES_CONTEXT
     return historial[corte:]
 
 
+_LINEA = "═══════════════════════════════════════════"
+
+
+def contexto_ubicacion(lat: float | None, lon: float | None) -> str:
+    """
+    Bloque para el system prompt del turno con la ubicación de la persona.
+
+    Va en el system prompt y NO en el mensaje del usuario: así el historial que
+    ve la persona (y el que se guarda) queda limpio, y el modelo sólo conoce la
+    ubicación del turno en curso.
+    """
+    cabecera = f"\n\n{_LINEA}\nUBICACIÓN\n{_LINEA}\n"
+    if lat is None or lon is None:
+        return cabecera + (
+            "No hay ubicación en este turno. Si hiciera falta, puedes sugerir activarla "
+            "en Perfil o dar los centros generales de Cusco con `buscar_centros_cercanos`."
+        )
+    zona = "aprox. en Cusco" if acc.en_cusco(lat, lon) else "fuera de Cusco"
+    return cabecera + (
+        f"Ubicación actual disponible: {lat:.5f}, {lon:.5f}; {zona}. "
+        "No se la vuelvas a pedir ni le recites las coordenadas; "
+        "`buscar_centros_cercanos` ya la usa sola."
+    )
+
+
 async def _ejecutar_tool(
     nombre: str,
     tool_input: dict,
     estado: EstadoSesion,
     usuario_id: str | None = None,
     sesion_id: str | None = None,
+    lat: float | None = None,
+    lon: float | None = None,
 ) -> tuple[dict, dict]:
     """
     Ejecuta la función real del backend para una tool_use dada.
 
     Devuelve (resultado_para_claude, señales_extra). `señales_extra` son datos
     que el router necesita para armar la respuesta HTTP (p.ej. si se debe
-    pedir ubicación al cliente móvil) pero que no forman parte del
-    tool_result que se le manda de vuelta a Claude.
+    pedir ubicación al cliente móvil, o las `acciones` que la app pinta como
+    botones) pero que no forman parte del tool_result que se le manda de
+    vuelta al modelo. `lat`/`lon` son los del turno en curso.
     """
     señales: dict[str, Any] = {}
 
@@ -135,6 +164,7 @@ async def _ejecutar_tool(
             tool_input.get("motivo"),
             tool_input.get("nivel_urgencia"),
         )
+        señales["acciones"] = acc.acciones_crisis()
         return (
             {"protocolo_activado": True, "recursos_garantizados": RECURSOS_NACIONALES_PE},
             señales,
@@ -153,9 +183,26 @@ async def _ejecutar_tool(
         )
 
     if nombre == "buscar_centros_cercanos":
-        lat = tool_input.get("lat")
-        lon = tool_input.get("lon")
+        # Si el modelo no pasa coordenadas se usan las del turno.
+        t_lat, t_lon = tool_input.get("lat"), tool_input.get("lon")
+        if isinstance(t_lat, (int, float)) and isinstance(t_lon, (int, float)):
+            lat, lon = float(t_lat), float(t_lon)
         resultado = await buscar_centros_cercanos(lat, lon)
+        tiene_ubicacion = lat is not None and lon is not None
+        fuera = tiene_ubicacion and not acc.en_cusco(lat, lon)
+        señales["acciones"] = acc.acciones_centros(resultado, lat, lon, fuera_de_cusco=fuera)
+        resultado = {
+            **resultado,
+            "ubicacion_usada": (
+                "la actual de la persona" if tiene_ubicacion else "ninguna (centros generales de Cusco)"
+            ),
+            "botones_en_la_app": True,
+        }
+        if fuera:
+            resultado["nota"] = (
+                "La persona está fuera de Cusco y el directorio local es de Cusco. La app le "
+                "muestra un botón para buscar centros en Google Maps alrededor de ella."
+            )
         return resultado, señales
 
     if nombre == "calcular_resultado":
@@ -200,7 +247,10 @@ async def _ejecutar_tool(
                 sesion_id=sesion_id,
             )
             señales["actividad_creada"] = True
-            return {"ok": True, "actividad": actividad.get("titulo")}, señales
+            titulo = actividad.get("titulo") or str(tool_input.get("titulo", "")).strip()
+            accion = acc.accion_actividad(titulo, actividad.get("id"))
+            señales["acciones"] = [accion] if accion else []
+            return {"ok": True, "actividad": titulo}, señales
 
         if nombre == "listar_actividades":
             pendientes = await repositorio.listar_actividades(usuario_id, estado="pendientes")
@@ -224,7 +274,17 @@ async def _ejecutar_tool(
         return {"error": "base_de_datos", "detalle": exc.mensaje}, señales
 
     if nombre == "recomendar_musica":
-        return enlaces_musica(str(tool_input.get("busqueda", ""))), señales
+        busqueda = str(tool_input.get("busqueda", ""))
+        accion = acc.accion_musica(busqueda)
+        señales["acciones"] = [accion] if accion else []
+        return enlaces_musica(busqueda), señales
+
+    if nombre == "recomendar_recurso":
+        accion = acc.accion_recurso(str(tool_input.get("recurso_id", "")))
+        if accion is None:
+            return {"error": "recurso_desconocido", "validos": list(acc.RECURSOS_APP)}, señales
+        señales["acciones"] = [accion]
+        return {"ok": True, "recurso": accion["titulo"], "boton_en_la_app": True}, señales
 
     logger.warning("Tool desconocida solicitada por el modelo: %s", nombre)
     return {"error": f"tool desconocida: {nombre}"}, señales
@@ -241,30 +301,26 @@ async def procesar_mensaje(
     Procesa un turno de conversación completo para una sesión.
 
     Devuelve un dict con: respuesta (texto final del asistente),
-    protocolo_crisis_activo, test_completo, ubicacion_solicitada, y —sólo en el
+    protocolo_crisis_activo, test_completo, ubicacion_solicitada, `acciones`
+    (botones derivados de las tools del turno; puede ser []) y —sólo en el
     turno donde el modelo llama a `calcular_resultado`— `resultado` (contrato de
     la app), `resultado_ml` (salida cruda del SVM) y `respuestas`.
     """
     estado = await _cargar_estado(sesion_id)
 
-    # Si el cliente ya mandó coordenadas en este turno (p.ej. tras aceptar
-    # compartir ubicación luego de `solicitar_ubicacion`), se las anexamos como
-    # contexto visible para el modelo, que puede entonces llamar a
-    # `buscar_centros_cercanos` con esos valores.
-    contexto_ubicacion = ""
-    if lat is not None and lon is not None:
-        contexto_ubicacion = f"\n\n[Ubicación recibida del cliente: lat={lat}, lon={lon}]"
-
-    estado.historial.append({"role": "user", "content": mensaje_usuario + contexto_ubicacion})
+    # El mensaje se guarda tal cual lo escribió la persona; la ubicación del
+    # turno viaja en el system prompt (ver `contexto_ubicacion`).
+    estado.historial.append({"role": "user", "content": mensaje_usuario})
 
     proveedor = get_proveedor()
     ubicacion_solicitada = False
+    acciones: list[dict] = []
     resultado_ml: dict | None = None
     texto_final = ""
 
     # El hilo es continuo, así que al modelo se le manda el prompt + lo que
     # recordamos de la persona, y sólo la ventana reciente de mensajes.
-    system = SYSTEM_PROMPT + await memoria_de(usuario_id)
+    system = SYSTEM_PROMPT + await memoria_de(usuario_id) + contexto_ubicacion(lat, lon)
 
     for _ in range(MAX_TOOL_ITERATIONS):
         try:
@@ -294,7 +350,10 @@ async def procesar_mensaje(
                 estado,
                 usuario_id=usuario_id,
                 sesion_id=sesion_id,
+                lat=lat,
+                lon=lon,
             )
+            acc.agregar(acciones, señales.get("acciones") or [])
             if señales.get("ubicacion_solicitada"):
                 ubicacion_solicitada = True
             if señales.get("resultado_ml"):
@@ -320,6 +379,7 @@ async def procesar_mensaje(
         "protocolo_crisis_activo": estado.protocolo_crisis_activo,
         "test_completo": estado.test_completo,
         "ubicacion_solicitada": ubicacion_solicitada,
+        "acciones": acciones,
         "resultado": construir_resultado(resultado_ml, sesion_id) if resultado_ml else None,
         "resultado_ml": resultado_ml,
         "respuestas": dict(estado.respuestas),

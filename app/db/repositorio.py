@@ -48,32 +48,101 @@ async def obtener_perfil(usuario_id: str) -> dict | None:
 # --------------------------------------------------------------------------- #
 
 
+# `mensajes.acciones` llega con schema_v4. Hasta que se aplique, el backend
+# sigue funcionando sin ella: reintenta sin la columna y avisa UNA vez.
+_aviso_sin_columna_acciones = False
+
+
+def _es_error_columna_acciones(exc: supabase.SupabaseError) -> bool:
+    """¿El fallo se debe a que la columna `acciones` aún no existe?"""
+    texto = (exc.mensaje or "").lower()
+    return exc.status_code in (400, 404) and (
+        "acciones" in texto or "pgrst204" in texto or "column" in texto or "columna" in texto
+    )
+
+
+def _avisar_sin_columna_acciones() -> None:
+    global _aviso_sin_columna_acciones
+    if not _aviso_sin_columna_acciones:
+        _aviso_sin_columna_acciones = True
+        logger.warning(
+            "La columna mensajes.acciones no existe: ejecuta supabase/schema_v4.sql. "
+            "Mientras tanto los botones del chat no se guardan en el historial."
+        )
+
+
 async def guardar_mensajes(
     sesion_id: str,
     usuario_id: str | None,
-    mensajes: list[tuple[str, str]],
+    mensajes: list[tuple[str, str] | tuple[str, str, list[dict] | None]],
 ) -> None:
     """
-    Guarda pares (rol, contenido) de un turno. Best-effort: si falla, se registra
-    y la conversación continúa — perder la transcripción no debe cortar el chat.
+    Guarda los mensajes de un turno: tuplas (rol, contenido) o (rol, contenido,
+    acciones). Best-effort: si falla, se registra y la conversación continúa —
+    perder la transcripción no debe cortar el chat.
+
+    La columna `acciones` sólo se envía si el turno trae alguna (PostgREST exige
+    las mismas claves en todas las filas, así que entonces va en todas, con null
+    donde no hay). Si la columna aún no existe, se reintenta sin ella.
     """
-    filas = [
-        {
-            "sesion_id": sesion_id,
-            "usuario_id": usuario_id,
-            "rol": rol,
-            "contenido": contenido,
-        }
-        for rol, contenido in mensajes
-        if contenido
-    ]
+    filas = []
+    for mensaje in mensajes:
+        rol, contenido = mensaje[0], mensaje[1]
+        acciones = mensaje[2] if len(mensaje) > 2 else None
+        if contenido:
+            filas.append(
+                {
+                    "sesion_id": sesion_id,
+                    "usuario_id": usuario_id,
+                    "rol": rol,
+                    "contenido": contenido,
+                    "acciones": acciones or None,
+                }
+            )
     if not filas:
         return
 
+    con_acciones = any(f["acciones"] for f in filas)
+    if not con_acciones:
+        for fila in filas:
+            del fila["acciones"]
+
     try:
         await supabase.insert("mensajes", filas)
+        return
+    except supabase.SupabaseError as exc:
+        if not (con_acciones and _es_error_columna_acciones(exc)):
+            logger.exception("No se pudo guardar la transcripción de la sesión %s", sesion_id)
+            return
+        _avisar_sin_columna_acciones()
+
+    try:
+        sin_acciones = [{k: v for k, v in f.items() if k != "acciones"} for f in filas]
+        await supabase.insert("mensajes", sin_acciones)
     except supabase.SupabaseError:
         logger.exception("No se pudo guardar la transcripción de la sesión %s", sesion_id)
+
+
+async def _select_mensajes(params: dict[str, Any]) -> list[dict]:
+    """
+    Lee mensajes pidiendo también `acciones`; si la columna aún no existe
+    (schema_v4 sin aplicar), repite la consulta sin ella. `acciones` siempre
+    sale como lista (null -> []).
+    """
+    try:
+        filas = await supabase.select(
+            "mensajes", {**params, "select": "rol,contenido,creado_en,acciones"}
+        )
+    except supabase.SupabaseError as exc:
+        if not _es_error_columna_acciones(exc):
+            raise
+        _avisar_sin_columna_acciones()
+        filas = await supabase.select("mensajes", {**params, "select": "rol,contenido,creado_en"})
+
+    for fila in filas:
+        acciones = fila.get("acciones")
+        fila["acciones"] = acciones if isinstance(acciones, list) else []
+    return filas
 
 
 # --------------------------------------------------------------------------- #
@@ -137,15 +206,13 @@ async def obtener_mensajes(sesion_id: str, usuario_id: str, limite: int = 200) -
     Se filtra también por `usuario_id` porque el backend consulta con la service
     role key, que ignora RLS: el aislamiento lo garantizamos aquí.
     """
-    return await supabase.select(
-        "mensajes",
+    return await _select_mensajes(
         {
             "sesion_id": f"eq.{sesion_id}",
             "usuario_id": f"eq.{usuario_id}",
-            "select": "rol,contenido,creado_en",
             "order": "creado_en.asc",
             "limit": limite,
-        },
+        }
     )
 
 
@@ -231,14 +298,12 @@ async def historial_usuario(usuario_id: str, limite: int = 200) -> list[dict]:
     Se pide en orden descendente para quedarnos con los MÁS RECIENTES cuando hay
     más de `limite`, y se devuelve invertido para pintarlos de arriba a abajo.
     """
-    filas = await supabase.select(
-        "mensajes",
+    filas = await _select_mensajes(
         {
             "usuario_id": f"eq.{usuario_id}",
-            "select": "rol,contenido,creado_en",
             "order": "creado_en.desc",
             "limit": limite,
-        },
+        }
     )
     return list(reversed(filas))
 

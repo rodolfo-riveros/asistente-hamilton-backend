@@ -14,9 +14,10 @@ Lógica interna (ver sección 10 del documento de especificación):
 from __future__ import annotations
 
 import logging
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
 from app.chat.orchestrator import procesar_mensaje
 from app.chat.session_store import nuevo_sesion_id
@@ -49,6 +50,81 @@ class ResultadoResponse(BaseModel):
     sesion_id: str
 
 
+# --------------------------------------------------------------------------- #
+# Acciones: botones que acompañan a un mensaje de la asistente (contrato v4)
+# --------------------------------------------------------------------------- #
+
+
+class AccionMusica(BaseModel):
+    tipo: Literal["musica"]
+    titulo: str
+    busqueda: str
+    spotify_url: str
+    youtube_music_url: str
+
+
+class AccionRecurso(BaseModel):
+    tipo: Literal["recurso"]
+    titulo: str
+    recurso_id: str
+
+
+class AccionCentro(BaseModel):
+    tipo: Literal["centro"]
+    titulo: str
+    direccion: str | None = None
+    telefono: str | None = None
+    maps_url: str
+    distancia_km: float | None = None
+
+
+class AccionBuscarMapa(BaseModel):
+    tipo: Literal["buscar_mapa"]
+    titulo: str
+    maps_url: str
+
+
+class AccionLlamar(BaseModel):
+    tipo: Literal["llamar"]
+    titulo: str
+    telefono: str
+
+
+class AccionActividad(BaseModel):
+    tipo: Literal["actividad"]
+    titulo: str
+    actividad_id: str | None = None
+
+
+Accion = Annotated[
+    AccionMusica
+    | AccionRecurso
+    | AccionCentro
+    | AccionBuscarMapa
+    | AccionLlamar
+    | AccionActividad,
+    Field(discriminator="tipo"),
+]
+_ADAPTADOR_ACCION: TypeAdapter = TypeAdapter(Accion)
+
+
+def acciones_validas(crudas: Any) -> list:
+    """
+    Acciones listas para la respuesta. Las que no cumplan el contrato (p. ej.
+    filas antiguas o editadas a mano en la BD) se descartan en vez de romper
+    el historial entero.
+    """
+    if not isinstance(crudas, list):
+        return []
+    validas = []
+    for cruda in crudas:
+        try:
+            validas.append(_ADAPTADOR_ACCION.validate_python(cruda))
+        except ValidationError:
+            logger.warning("Acción descartada por no cumplir el contrato: %r", cruda)
+    return validas
+
+
 class MensajeResponse(BaseModel):
     sesion_id: str
     respuesta: str
@@ -60,6 +136,8 @@ class MensajeResponse(BaseModel):
     ubicacion_solicitada: bool = False
     # Sólo viene en el turno en que el modelo cierra el test.
     resultado: ResultadoResponse | None = None
+    # Botones del turno (música, recursos, centros, llamadas, actividad). Siempre presente.
+    acciones: list[Accion] = []
 
 
 @router.post("/mensaje", response_model=MensajeResponse)
@@ -125,6 +203,7 @@ async def enviar_mensaje(
         test_completo=resultado["test_completo"],
         ubicacion_solicitada=resultado["ubicacion_solicitada"],
         resultado=resultado.get("resultado"),
+        acciones=acciones_validas(resultado.get("acciones")),
     )
 
 
@@ -143,7 +222,10 @@ async def _persistir_turno(
     await repositorio.guardar_mensajes(
         sesion_id,
         usuario_id,
-        [("user", mensaje_usuario), ("assistant", resultado["respuesta"])],
+        [
+            ("user", mensaje_usuario),
+            ("assistant", resultado["respuesta"], resultado.get("acciones") or None),
+        ],
     )
 
     evaluacion = resultado.get("resultado")
@@ -171,6 +253,17 @@ class MensajeGuardado(BaseModel):
     rol: str
     contenido: str
     creado_en: str
+    # Botones guardados con el mensaje de la asistente (`mensajes.acciones`).
+    acciones: list[Accion] = []
+
+
+def _a_guardado(fila: dict) -> MensajeGuardado:
+    return MensajeGuardado(
+        rol=fila.get("rol", "assistant"),
+        contenido=fila.get("contenido", ""),
+        creado_en=fila.get("creado_en") or "",
+        acciones=acciones_validas(fila.get("acciones")),
+    )
 
 
 class SesionResumen(BaseModel):
@@ -240,14 +333,7 @@ async def _detalle(fila: dict, usuario_id: str) -> SesionDetalle:
     resumen = _a_resumen(fila)
     return SesionDetalle(
         **resumen.model_dump(),
-        mensajes=[
-            MensajeGuardado(
-                rol=m.get("rol", "assistant"),
-                contenido=m.get("contenido", ""),
-                creado_en=m.get("creado_en") or "",
-            )
-            for m in mensajes
-        ],
+        mensajes=[_a_guardado(m) for m in mensajes],
     )
 
 
@@ -264,11 +350,4 @@ async def historial(
     """
     _exigir_supabase()
     filas = await repositorio.historial_usuario(usuario.id, limite=limite)
-    return [
-        MensajeGuardado(
-            rol=f.get("rol", "assistant"),
-            contenido=f.get("contenido", ""),
-            creado_en=f.get("creado_en") or "",
-        )
-        for f in filas
-    ]
+    return [_a_guardado(f) for f in filas]

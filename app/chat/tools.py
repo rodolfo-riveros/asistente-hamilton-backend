@@ -1,10 +1,12 @@
 """
 Definición de las tools (function calling) que el asistente puede invocar.
 
-Exactamente estas 5 tools, tal como las especifica el documento de diseño
-(sección 6). El orquestador (`orchestrator.py`) es responsable de ejecutar la
+Las 5 tools clínicas del documento de diseño (sección 6) más las de
+acompañamiento cotidiano. El orquestador (`orchestrator.py`) es responsable de ejecutar la
 función real del backend correspondiente a cada `tool_use` que devuelva Claude.
 """
+
+from app.chat.acciones import RECURSOS_APP
 
 TOOLS = [
     {
@@ -42,16 +44,22 @@ TOOLS = [
     },
     {
         "name": "solicitar_ubicacion",
-        "description": "Le pide a la app móvil que solicite permiso de ubicación al usuario.",
+        "description": (
+            "Le pide a la app móvil que solicite permiso de ubicación al usuario. "
+            "No la uses si el contexto ya trae 'Ubicación actual disponible'."
+        ),
         "input_schema": {"type": "object", "properties": {}},
     },
     {
         "name": "buscar_centros_cercanos",
-        "description": "Busca centros de salud mental cercanos a partir de coordenadas.",
+        "description": (
+            "Busca centros de salud mental cercanos. Si no pasas lat/lon se usa la "
+            "ubicación actual de la persona (la del contexto) o, si no hay, los centros "
+            "generales de Cusco. La app muestra botones para verlos en Google Maps."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {"lat": {"type": "number"}, "lon": {"type": "number"}},
-            "required": ["lat", "lon"],
         },
     },
     {
@@ -185,6 +193,26 @@ TOOLS += [
                 },
             },
             "required": ["busqueda"],
+        },
+    },
+    {
+        "name": "recomendar_recurso",
+        "description": (
+            "Muestra un botón para abrir un recurso de la propia app (pestaña Recursos). "
+            "Úsala cuando un ejercicio o lectura concreta le pueda servir ahora: "
+            + "; ".join(f"'{rid}' = {titulo}" for rid, titulo in RECURSOS_APP.items())
+            + "."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "recurso_id": {"type": "string", "enum": list(RECURSOS_APP)},
+                "motivo": {
+                    "type": "string",
+                    "description": "Por qué le puede servir, en una frase. Opcional.",
+                },
+            },
+            "required": ["recurso_id"],
         },
     },
 ]

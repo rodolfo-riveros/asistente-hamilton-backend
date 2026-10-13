@@ -242,9 +242,13 @@ Respuesta esperada:
   "protocolo_crisis_activo": false,
   "test_completo": false,
   "ubicacion_solicitada": false,
-  "resultado": null
+  "resultado": null,
+  "acciones": []
 }
 ```
+
+`acciones` siempre viene (puede ser `[]`): son los botones que la app pinta
+debajo del mensaje. Ver la sección 11.
 
 El token es opcional en `/chat/mensaje`: sin él la conversación funciona, pero
 la sesión y la evaluación quedan sin dueño y no aparecen en el histórico.
@@ -524,3 +528,54 @@ siempre llevan a resultados vivos (un id de playlist puede desaparecer).
 Aplicar `supabase/schema_v2.sql` en el SQL Editor (idempotente). Añade las
 columnas nuevas de `perfiles`, las tablas `preferencias` y `actividades`, sus
 políticas RLS y el bucket de avatares.
+
+---
+
+## 11. Chat como amiga (v4): acciones y ubicación en contexto
+
+### Tono y ritmo
+
+El system prompt (`app/prompts/system_prompt.py`) prioriza la conversación:
+escucha reflexiva, validar, preguntas abiertas de una en una, mensajes de 2–4
+frases sin listas. El test va **muy espaciado**: nunca en los primeros
+intercambios, como máximo un ítem cuando conecte con lo que la persona cuenta,
+nunca dos seguidos, y si ya contó algo que responde un ítem se registra sin
+preguntarlo; puede completarse a lo largo de varios días. Los 17 ítems, sus
+escalas y el protocolo de crisis **no cambian**.
+
+### Ubicación
+
+La app manda `lat`/`lon` en cada mensaje cuando tiene permiso. Ya **no** se pegan
+al texto del usuario (que se guarda y se devuelve limpio): van en un bloque
+`UBICACIÓN` del system prompt de ese turno ("Ubicación actual disponible: lat,
+lon; aprox. en Cusco / fuera de Cusco", radio de 25 km desde la Plaza de Armas).
+`buscar_centros_cercanos` usa esas coordenadas si el modelo no pasa otras.
+
+### Acciones
+
+El orquestador acumula, sin duplicados, botones derivados de las tools del
+turno (`app/chat/acciones.py`). `POST /chat/mensaje` los devuelve en `acciones`
+y se guardan en `mensajes.acciones` (jsonb) con el mensaje de la asistente;
+`GET /chat/historial` y `GET /chat/sesiones/{id|ultima}` los devuelven por mensaje
+(`null` → `[]`).
+
+| Tool | Acción |
+| --- | --- |
+| `recomendar_musica` | `{tipo:"musica", titulo, busqueda, spotify_url, youtube_music_url}` |
+| `recomendar_recurso` (nueva) | `{tipo:"recurso", titulo, recurso_id}` — ids de la pestaña Recursos de la app |
+| `buscar_centros_cercanos` | hasta 3 `{tipo:"centro", titulo, direccion?, telefono?, maps_url, distancia_km?}` + `{tipo:"buscar_mapa", titulo, maps_url}` si hay lat/lon |
+| `activar_protocolo_crisis` | `{tipo:"llamar", titulo, telefono:"113"}` y `"106"` |
+| `agendar_actividad` | `{tipo:"actividad", titulo, actividad_id}` |
+
+- `maps_url` de un centro: por coordenadas si las tiene; si no, búsqueda por
+  nombre + dirección (o distrito) + Cusco. Dirección y teléfono sólo si el
+  directorio los trae; nunca se inventan.
+- Fuera de Cusco (y sin resultados de Google Places) sólo se ofrece
+  `buscar_mapa`, primero, centrado en la persona.
+
+### Migración v4
+
+Ejecutar `supabase/schema_v4.sql` en el SQL Editor (también está al final de
+`supabase/instalar_todo.sql`; idempotente). Añade `mensajes.acciones jsonb`.
+Mientras no se aplique, el backend reintenta el insert sin la columna, lee el
+historial sin ella y deja **un** warning en el log.

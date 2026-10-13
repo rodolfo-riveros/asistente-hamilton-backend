@@ -94,11 +94,14 @@ async def _buscar_google_places(lat: float, lon: float, radio: int) -> list[dict
 
     resultados = []
     for lugar in data.get("results", [])[:5]:
+        ubicacion = (lugar.get("geometry") or {}).get("location") or {}
         resultados.append(
             {
                 "nombre": lugar.get("name"),
                 "direccion": lugar.get("vicinity"),
                 "rating": lugar.get("rating"),
+                "lat": ubicacion.get("lat"),
+                "lon": ubicacion.get("lng"),
             }
         )
     return resultados
@@ -118,11 +121,15 @@ async def buscar_centros_cercanos(lat: float | None, lon: float | None) -> dict:
     radio = 8000 if tiene_ubicacion_real else 15000
 
     resultados = await _buscar_google_places(lat_efectivo, lon_efectivo, radio)
+    desde_google = bool(resultados)
 
     if not resultados:
         resultados = cargar_directorio_local_csmc()
 
     return {
         "centros_cercanos": resultados,
+        # True si vienen de Google Places (cerca de la persona); False si son
+        # el directorio local de Cusco.
+        "desde_google": desde_google,
         "recursos_garantizados": RECURSOS_NACIONALES_PE,
     }
