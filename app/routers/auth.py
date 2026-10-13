@@ -132,8 +132,9 @@ def _extraer_usuario(datos: dict, nombre_por_defecto: str = "") -> UsuarioRespon
 
 @router.post("/register", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
 async def registrar(payload: RegistroRequest) -> AuthResponse:
+    # 1) La cuenta se crea ya confirmada (sin correo de verificación).
     try:
-        datos = await supabase.auth_signup(
+        await supabase.auth_signup(
             email=payload.email,
             password=payload.password,
             metadata={"nombre": payload.nombre},
@@ -141,17 +142,20 @@ async def registrar(payload: RegistroRequest) -> AuthResponse:
     except supabase.SupabaseError as exc:
         raise _error_http(exc) from exc
 
+    # 2) Se inicia sesión en el acto para devolver los tokens a la app.
+    try:
+        datos = await supabase.auth_sign_in(payload.email, payload.password)
+    except supabase.SupabaseError as exc:
+        raise _error_http(exc) from exc
+
     usuario = _extraer_usuario(datos, nombre_por_defecto=payload.nombre)
     token = datos.get("access_token")
 
     if not token:
-        # Supabase creó la cuenta pero exige confirmar el correo antes de emitir
-        # sesión: se lo decimos al usuario en vez de devolver un token vacío.
+        # No debería pasar (la cuenta nace confirmada); por si acaso, mensaje claro.
         raise HTTPException(
-            status_code=status.HTTP_202_ACCEPTED,
-            detail=(
-                "Cuenta creada. Revisa tu correo para confirmarla y luego inicia sesión."
-            ),
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Tu cuenta se creó, pero no pudimos iniciar sesión. Entra con tu correo.",
         )
 
     # El perfil es "de mejor esfuerzo": si falla, la cuenta ya existe y el

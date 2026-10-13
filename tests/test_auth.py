@@ -189,3 +189,50 @@ def test_put_perfil_solo_envia_lo_que_llego_y_vacio_borra(monkeypatch, cliente):
     assert resp.status_code == 200
     # `edad`/`ocupacion` no se mandaron: no se tocan. El nombre vacío se ignora.
     assert recibido == {"campos": {"ciudad": None, "bio": None}, "permitir_nulos": True}
+
+
+def test_registro_crea_cuenta_confirmada_y_entra(monkeypatch, cliente):
+    """Sin correo de confirmación: se crea confirmada y se devuelve sesión."""
+    llamadas = {}
+
+    async def signup(**k):
+        llamadas["signup"] = k
+        return {"id": "u-1", "email": "ana@example.com"}
+
+    async def sign_in(email, password):
+        llamadas["sign_in"] = (email, password)
+        return SESION_SUPABASE
+
+    monkeypatch.setattr(supabase, "auth_signup", signup)
+    monkeypatch.setattr(supabase, "auth_sign_in", sign_in)
+    resp = cliente.post(
+        "/auth/register",
+        json={"nombre": "Ana", "email": "ana@example.com", "password": "secreta"},
+    )
+
+    assert resp.status_code == 201
+    assert resp.json()["token"] == "acc-1"
+    assert resp.json()["user"]["nombre"] == "Ana"
+    assert llamadas["sign_in"] == ("ana@example.com", "secreta")
+
+
+def test_signup_usa_api_admin_con_email_confirmado(monkeypatch):
+    """La petición a Supabase pide la cuenta ya confirmada."""
+    import asyncio
+
+    import httpx
+
+    enviado = {}
+
+    async def post(self, url, json=None, headers=None, **_k):
+        enviado.update(url=url, json=json)
+        return httpx.Response(200, json={"id": "u-1"}, request=httpx.Request("POST", "http://x"))
+
+    monkeypatch.setattr(settings, "supabase_url", "https://x.supabase.co")
+    monkeypatch.setattr(settings, "supabase_service_role_key", "sb_secret_x")
+    monkeypatch.setattr(httpx.AsyncClient, "post", post)
+    asyncio.run(supabase.auth_signup("ana@example.com", "secreta", {"nombre": "Ana"}))
+
+    assert enviado["url"] == "/auth/v1/admin/users"
+    assert enviado["json"]["email_confirm"] is True
+    assert enviado["json"]["user_metadata"] == {"nombre": "Ana"}

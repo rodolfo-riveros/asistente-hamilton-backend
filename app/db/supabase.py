@@ -123,14 +123,21 @@ def _verificar(respuesta: httpx.Response) -> Any:
 
 
 async def auth_signup(email: str, password: str, metadata: dict | None = None) -> dict:
-    """Crea el usuario en Supabase Auth. `metadata` va a `raw_user_meta_data`."""
+    """
+    Crea el usuario en Supabase Auth **ya confirmado** (sin correo de verificación).
+
+    Usa la API de administración (`POST /auth/v1/admin/users` con
+    `email_confirm: true`), que requiere la clave de servicio. Así la cuenta
+    queda lista al instante aunque el proyecto tenga activado "Confirm email".
+    Devuelve el usuario creado; la sesión se obtiene después con `auth_sign_in`.
+    """
     _exigir_config()
-    payload: dict[str, Any] = {"email": email, "password": password}
+    payload: dict[str, Any] = {"email": email, "password": password, "email_confirm": True}
     if metadata:
-        payload["data"] = metadata
+        payload["user_metadata"] = metadata
 
     respuesta = await get_client().post(
-        "/auth/v1/signup", json=payload, headers=_headers_servicio()
+        "/auth/v1/admin/users", json=payload, headers=_headers_servicio()
     )
     return _verificar(respuesta) or {}
 
