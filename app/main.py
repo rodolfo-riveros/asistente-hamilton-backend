@@ -11,7 +11,9 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+import httpx
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
@@ -82,6 +84,20 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.exception_handler(httpx.TransportError)
+async def servicio_inalcanzable(_: Request, exc: httpx.TransportError) -> JSONResponse:
+    """
+    Sin conexión con Supabase u otro servicio externo (DNS, timeout, proyecto
+    borrado o pausado): 503 con un mensaje claro en vez de un 500 opaco. La app
+    lo muestra tal cual y NO cierra la sesión (eso sólo pasa con 401).
+    """
+    logger.error("Servicio externo inalcanzable: %s", exc)
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "El servicio no está disponible en este momento. Inténtalo en unos minutos."},
+    )
+
 
 app.include_router(health.router)
 app.include_router(auth.router)
