@@ -14,6 +14,11 @@ Contrato (ver nota "Chat como amiga" de la app), discriminado por `tipo`:
     buscar_mapa {titulo, maps_url}
     llamar      {titulo, telefono}
     actividad   {titulo, actividad_id?}
+    contacto_confianza {titulo}   (v5: la app usa la persona de confianza guardada
+                                   en el teléfono; el backend nunca llama ni escribe)
+
+También aquí, las respuestas rápidas (v5, `ofrecer_opciones`): `opciones: string[]`
+para la última pregunta de la asistente. No son acciones ni se guardan.
 """
 
 from __future__ import annotations
@@ -116,6 +121,9 @@ def acciones_crisis() -> list[dict]:
     return [
         {"tipo": "llamar", "titulo": "Línea 113, opción 5", "telefono": linea["telefono"]},
         {"tipo": "llamar", "titulo": "SAMU 106 (emergencias)", "telefono": samu["telefono"]},
+        # La app lo resuelve con `preferencias.personaConfianza` (botones "Llamar a X" /
+        # "Enviarle un mensaje"). Nunca se llama ni se escribe sin que la persona pulse.
+        {"tipo": "contacto_confianza", "titulo": "Avisar a tu persona de confianza"},
     ]
 
 
@@ -202,6 +210,7 @@ def _clave(accion: dict) -> tuple:
         "buscar_mapa": "maps_url",
         "llamar": "telefono",
         "actividad": "actividad_id",
+        "contacto_confianza": "tipo",
     }.get(tipo, "titulo")
     valor = accion.get(distintivo) or accion.get("titulo")
     if isinstance(valor, str):
@@ -220,3 +229,47 @@ def agregar(destino: list[dict], nuevas: list[dict | None]) -> None:
             continue
         vistas.add(clave)
         destino.append(accion)
+
+
+# --------------------------------------------------------------------------- #
+# Respuestas rápidas (v5): `ofrecer_opciones`
+# --------------------------------------------------------------------------- #
+
+MIN_OPCIONES = 2
+MAX_OPCIONES = 5
+MAX_LARGO_OPCION = 32
+
+
+def _recortar_opcion(texto: str) -> str:
+    """Deja la opción en ≤ 32 caracteres, cortando por palabra si se puede."""
+    if len(texto) <= MAX_LARGO_OPCION:
+        return texto
+    corte = texto[: MAX_LARGO_OPCION + 1]
+    espacio = corte.rfind(" ")
+    corte = corte[:espacio] if espacio >= MAX_LARGO_OPCION // 2 else texto[:MAX_LARGO_OPCION]
+    return corte.rstrip(" ,;:.-")
+
+
+def normalizar_opciones(crudas: Any) -> list[str]:
+    """
+    Valida y limpia las opciones que propone el modelo.
+
+    Sólo textos no vacíos (espacios colapsados), recortados a 32 caracteres, sin
+    duplicados (sin distinguir mayúsculas) y como mucho 5. Si quedan menos de 2
+    no tiene sentido mostrar botones: se devuelve `[]`.
+    """
+    if not isinstance(crudas, list):
+        return []
+    opciones: list[str] = []
+    vistas: set[str] = set()
+    for cruda in crudas:
+        if not isinstance(cruda, str):
+            continue
+        texto = _recortar_opcion(" ".join(cruda.split()))
+        if not texto or texto.casefold() in vistas:
+            continue
+        vistas.add(texto.casefold())
+        opciones.append(texto)
+        if len(opciones) == MAX_OPCIONES:
+            break
+    return opciones if len(opciones) >= MIN_OPCIONES else []

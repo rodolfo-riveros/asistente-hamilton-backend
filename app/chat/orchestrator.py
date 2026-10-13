@@ -19,11 +19,13 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from app.chat import acciones as acc
 from app.chat.companero import enlaces_musica, memoria_de
 from app.chat.resultado import construir_resultado
+from app.chat.seguimiento import contexto_seguimiento
 from app.chat.session_store import session_store
 from app.chat.tools import TOOLS
 from app.db import repositorio, supabase
@@ -129,6 +131,20 @@ def contexto_ubicacion(lat: float | None, lon: float | None) -> str:
     )
 
 
+# Perú no tiene horario de verano: UTC-5 fijo (sin depender de tzdata en Windows).
+ZONA_PERU = timezone(timedelta(hours=-5))
+_DIAS = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
+
+
+def contexto_fecha(ahora: datetime | None = None) -> str:
+    """Fecha y hora de Perú, para que `agendar_actividad` lleve una fecha concreta."""
+    ahora = (ahora or datetime.now(timezone.utc)).astimezone(ZONA_PERU)
+    return (
+        f"\n\n{_LINEA}\nFECHA Y HORA\n{_LINEA}\n"
+        f"Ahora en Perú: {_DIAS[ahora.weekday()]} {ahora:%Y-%m-%d %H:%M} (UTC-05:00)."
+    )
+
+
 async def _ejecutar_tool(
     nombre: str,
     tool_input: dict,
@@ -166,9 +182,29 @@ async def _ejecutar_tool(
         )
         señales["acciones"] = acc.acciones_crisis()
         return (
-            {"protocolo_activado": True, "recursos_garantizados": RECURSOS_NACIONALES_PE},
+            {
+                "protocolo_activado": True,
+                "recursos_garantizados": RECURSOS_NACIONALES_PE,
+                "botones_en_la_app": (
+                    "Llamar a la Línea 113 y al SAMU 106, y 'Avisar a tu persona de confianza' "
+                    "(la persona decide si llama o le escribe; la app NO llama ni avisa sola)."
+                ),
+            },
             señales,
         )
+
+    if nombre == "ofrecer_opciones":
+        opciones = acc.normalizar_opciones(tool_input.get("opciones"))
+        if not opciones:
+            return (
+                {
+                    "error": "opciones_invalidas",
+                    "detalle": "Hacen falta de 2 a 5 opciones de texto distintas (≤ 32 caracteres).",
+                },
+                señales,
+            )
+        señales["opciones"] = opciones
+        return {"ok": True, "opciones": opciones, "botones_en_la_app": True}, señales
 
     if nombre == "solicitar_ubicacion":
         señales["ubicacion_solicitada"] = True
@@ -302,7 +338,8 @@ async def procesar_mensaje(
 
     Devuelve un dict con: respuesta (texto final del asistente),
     protocolo_crisis_activo, test_completo, ubicacion_solicitada, `acciones`
-    (botones derivados de las tools del turno; puede ser []) y —sólo en el
+    (botones derivados de las tools del turno; puede ser []), `opciones`
+    (respuestas rápidas de `ofrecer_opciones`; puede ser []) y —sólo en el
     turno donde el modelo llama a `calcular_resultado`— `resultado` (contrato de
     la app), `resultado_ml` (salida cruda del SVM) y `respuestas`.
     """
@@ -315,12 +352,24 @@ async def procesar_mensaje(
     proveedor = get_proveedor()
     ubicacion_solicitada = False
     acciones: list[dict] = []
+    # Respuestas rápidas de la última pregunta: si el modelo llama varias veces
+    # a `ofrecer_opciones` en el turno, vale la última válida. No se persisten.
+    opciones: list[str] = []
     resultado_ml: dict | None = None
     texto_final = ""
 
     # El hilo es continuo, así que al modelo se le manda el prompt + lo que
     # recordamos de la persona, y sólo la ventana reciente de mensajes.
-    system = SYSTEM_PROMPT + await memoria_de(usuario_id) + contexto_ubicacion(lat, lon)
+    # El bloque de seguimiento (modo recuperación) lo decide el backend con las
+    # evaluaciones guardadas; ver `app/chat/seguimiento.py`.
+    test_a_medias = 0 if estado.test_completo else len(estado.respuestas)
+    system = (
+        SYSTEM_PROMPT
+        + await memoria_de(usuario_id)
+        + await contexto_seguimiento(usuario_id, test_a_medias)
+        + contexto_ubicacion(lat, lon)
+        + contexto_fecha()
+    )
 
     for _ in range(MAX_TOOL_ITERATIONS):
         try:
@@ -354,6 +403,8 @@ async def procesar_mensaje(
                 lon=lon,
             )
             acc.agregar(acciones, señales.get("acciones") or [])
+            if señales.get("opciones"):
+                opciones = señales["opciones"]
             if señales.get("ubicacion_solicitada"):
                 ubicacion_solicitada = True
             if señales.get("resultado_ml"):
@@ -380,6 +431,7 @@ async def procesar_mensaje(
         "test_completo": estado.test_completo,
         "ubicacion_solicitada": ubicacion_solicitada,
         "acciones": acciones,
+        "opciones": opciones,
         "resultado": construir_resultado(resultado_ml, sesion_id) if resultado_ml else None,
         "resultado_ml": resultado_ml,
         "respuestas": dict(estado.respuestas),

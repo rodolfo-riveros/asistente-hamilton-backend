@@ -243,12 +243,14 @@ Respuesta esperada:
   "test_completo": false,
   "ubicacion_solicitada": false,
   "resultado": null,
-  "acciones": []
+  "acciones": [],
+  "opciones": []
 }
 ```
 
 `acciones` siempre viene (puede ser `[]`): son los botones que la app pinta
-debajo del mensaje. Ver la sección 11.
+debajo del mensaje. Ver la sección 11. `opciones` también (puede ser `[]`):
+respuestas rápidas para la última pregunta. Ver la sección 12.
 
 El token es opcional en `/chat/mensaje`: sin él la conversación funciona, pero
 la sesión y la evaluación quedan sin dueño y no aparecen en el histórico.
@@ -579,3 +581,56 @@ Ejecutar `supabase/schema_v4.sql` en el SQL Editor (también está al final de
 `supabase/instalar_todo.sql`; idempotente). Añade `mensajes.acciones jsonb`.
 Mientras no se aplique, el backend reintenta el insert sin la columna, lee el
 historial sin ella y deja **un** warning en el log.
+
+## 12. Chat v5: respuestas rápidas, propuesta concreta, modo seguimiento
+
+### Respuestas rápidas (`opciones`)
+
+Tool `ofrecer_opciones(opciones: string[])`. El backend las valida
+(`acciones.normalizar_opciones`): textos no vacíos, recortados a 32 caracteres
+(por palabra si se puede), sin duplicados (sin distinguir mayúsculas), máximo
+5; si quedan menos de 2 → `[]` y el modelo recibe `opciones_invalidas`.
+`POST /chat/mensaje` devuelve **siempre** `opciones: string[]`; si el modelo la
+llama varias veces en el turno vale la última válida. **No se guardan** en
+`mensajes` ni salen en `/chat/historial`: sólo valen para el mensaje actual.
+
+Prompt: en preguntas cerradas, `["Sí","No"]` o variantes ("Sí, me gustaría",
+"Ahora no"). En ítems del test, opciones cálidas que mapean 1 a 1 a la escala
+(escala_5: Nada/Un poco/Bastante/Mucho/Muchísimo → 0–4; escala_insomnio:
+No/A veces/Casi siempre → 0–2; escala_3: No/Un poco/Mucho → 0–2). El ítem 3
+(ideación suicida) va sin botones. Nunca en preguntas abiertas.
+
+### Propuesta concreta
+
+Aurora lee señales (encierro, sedentarismo, mal sueño, estrés de estudios,
+soledad, rumiación) y propone UNA acción pequeña (caminar 10 min, sol de la
+mañana, llamar a alguien, respiración con `recomendar_recurso`, música con
+`recomendar_musica`) y ofrece agendarla con `["Sí, agéndalo","Ahora no"]`. Si
+acepta, `agendar_actividad` con fecha concreta: el system prompt lleva un
+bloque `FECHA Y HORA` (Perú, UTC-5). Máximo una propuesta por respuesta y no en
+cada mensaje.
+
+### Modo seguimiento / recuperación (`app/chat/seguimiento.py`)
+
+Se calcula en el backend con `listar_evaluaciones` (las 5 últimas) y se inyecta
+como bloque `ESTADO DE LA PERSONA` en el system prompt del turno:
+
+| Situación | Modo |
+| --- | --- |
+| Sin evaluaciones | normal (ritmo de la PARTE 1) |
+| Último nivel "Sin depresión" | **seguimiento** |
+| Tendencia "mejora" (baja ≥1 nivel o ≥6 puntos HDRS frente a la anterior) y último nivel ≠ "Depresión severa" | **seguimiento** |
+| Resto (estable / empeora / severa) | normal; si empeora, atención extra y sugerir apoyo profesional |
+
+En seguimiento Aurora no inicia ni continúa ítems por su cuenta; conversa de
+cómo se siente, logros, prevención de recaídas y planes, y sólo retoma la
+evaluación si la persona lo pide o hay señales claras de empeoramiento durante
+varios mensajes (con suavidad). Si hay un test a medias, no insiste. El
+protocolo de crisis sigue igual. Si la base de datos falla no se añade bloque.
+
+### Crisis: persona de confianza
+
+`activar_protocolo_crisis` añade, tras `llamar` 113 y 106,
+`{tipo:"contacto_confianza", titulo:"Avisar a tu persona de confianza"}`. La
+app lo resuelve con la persona de confianza guardada en el teléfono. El prompt
+anima con tacto a contactarla y **nunca** promete que la app llamará o avisará sola.

@@ -81,6 +81,16 @@ def sin_red(monkeypatch):
     monkeypatch.setattr(centros, "_buscar_google_places", sin_google)
     monkeypatch.setattr(centros, "cargar_directorio_local_csmc", lambda *a, **k: DIRECTORIO)
 
+    # Memoria y evaluaciones vacías: nada de Supabase real aunque haya usuario.
+    async def vacio(*_a, **_k):
+        return []
+
+    async def sin_memoria(*_a, **_k):
+        return ""
+
+    monkeypatch.setattr(orchestrator, "memoria_de", sin_memoria)
+    monkeypatch.setattr(repositorio, "listar_evaluaciones", vacio)
+
 
 def _usar(monkeypatch, proveedor: ProveedorGuion) -> ProveedorGuion:
     monkeypatch.setattr(orchestrator, "get_proveedor", lambda: proveedor)
@@ -181,7 +191,7 @@ def test_agregar_no_duplica():
     destino: list[dict] = []
     acc.agregar(destino, acc.acciones_crisis())
     acc.agregar(destino, [*acc.acciones_crisis(), acc.accion_musica("Lofi"), acc.accion_musica("lofi")])
-    assert [a["tipo"] for a in destino] == ["llamar", "llamar", "musica"]
+    assert [a["tipo"] for a in destino] == ["llamar", "llamar", "contacto_confianza", "musica"]
 
 
 # --------------------------------------------------------------------------- #
@@ -255,6 +265,7 @@ async def test_crisis_musica_recurso_sin_duplicados(monkeypatch, sin_red):
     assert salida["acciones"] == [
         {"tipo": "llamar", "titulo": "Línea 113, opción 5", "telefono": "113"},
         {"tipo": "llamar", "titulo": "SAMU 106 (emergencias)", "telefono": "106"},
+        {"tipo": "contacto_confianza", "titulo": "Avisar a tu persona de confianza"},
         acc.accion_musica("música tranquila"),
         {"tipo": "recurso", "titulo": "Grounding 5-4-3-2-1", "recurso_id": "grounding-54321"},
     ]

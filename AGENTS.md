@@ -30,8 +30,17 @@
 - **`app/chat/orchestrator.py`** — loop de tool-use (máx. 8 iteraciones, 2048 tokens).
   Historial en formato neutro JSON-serializable. La ubicación del turno va en el system
   prompt (bloque `UBICACIÓN`), nunca en el texto del usuario. Acumula `acciones` del turno.
+  v5: también añade los bloques `ESTADO DE LA PERSONA` (modo seguimiento) y `FECHA Y HORA`
+  (Perú, UTC-5) y devuelve `opciones` (la última llamada válida a `ofrecer_opciones`).
+- **`app/chat/seguimiento.py`** — modo seguimiento/recuperación calculado en el backend con
+  las evaluaciones guardadas: seguimiento si el último nivel es "Sin depresión" o la tendencia
+  mejora claramente (baja ≥1 nivel o ≥6 puntos HDRS) sin ser "Depresión severa". Umbrales en
+  constantes del módulo. Best-effort: si la BD falla no se añade bloque.
 - **`app/chat/acciones.py`** — botones del chat (contrato v4): `musica`, `recurso`, `centro`,
-  `buscar_mapa`, `llamar`, `actividad`. `RECURSOS_APP` = ids de `src/screens/recursos/contenido.ts`
+  `buscar_mapa`, `llamar`, `actividad`, y `contacto_confianza` (v5, en crisis junto a 113/106;
+  la app lo resuelve con la persona de confianza del teléfono, nunca llama sola).
+  `normalizar_opciones` valida las respuestas rápidas (2–5, ≤32 caracteres, sin duplicados).
+  `RECURSOS_APP` = ids de `src/screens/recursos/contenido.ts`
   de la app; si cambian allí, cambiar aquí.
 - **`app/chat/session_store.py`** — `MemorySessionStore` (dev) o `SupabaseSessionStore` (si hay credenciales).
   Sesiones se pierden al reiniciar sin Supabase. Interfaz async.
@@ -71,6 +80,8 @@
 - `pytest` sin args corre todo. `asyncio_mode = auto` → los `async` tests funcionan sin decorador.
 - `tests/test_modelo.py` — carga el `.pkl` real (necesita `SVM_MODELO.pkl` y `SVM_scaler.pkl` en `app/ml/models/`).
 - `tests/test_llm_adaptadores.py` — sin red, solo conversión de estructuras.
+- `tests/test_acciones.py` (v4) y `tests/test_chat_v5.py` (opciones, modo seguimiento,
+  `contacto_confianza`) — sin red: proveedor con guion y `memoria_de`/`listar_evaluaciones` parcheados.
 
 ## Endpoints (todos los routers en `app/routers/`)
 
@@ -81,7 +92,7 @@
 | `POST /auth/login` | No | `{email, password}` → `{token, user, refresh_token, expires_in}` |
 | `POST /auth/refresh` | No | `{refresh_token}` → igual que login. 401 si caducó |
 | `GET /auth/me` | Sí | Datos del usuario autenticado |
-| `POST /chat/mensaje` | Opcional | Token opcional → sesión anónima. Admite `sesion_id`, `lat`, `lon`. Devuelve siempre `acciones: Accion[]` |
+| `POST /chat/mensaje` | Opcional | Token opcional → sesión anónima. Admite `sesion_id`, `lat`, `lon`. Devuelve siempre `acciones: Accion[]` y `opciones: string[]` (respuestas rápidas; no se guardan) |
 | `GET /chat/historial` | Sí | Hilo completo; cada mensaje con `acciones` (`null` → `[]`) |
 | `GET /evaluaciones` | Sí | Histórico del usuario, más reciente primero |
 | `POST /voz/transcribir` | Opcional | Multipart con `audio`. 25 MB máx |

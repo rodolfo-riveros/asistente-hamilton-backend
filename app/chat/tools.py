@@ -216,3 +216,30 @@ TOOLS += [
         },
     },
 ]
+
+# --- Respuestas rápidas (v5) --------------------------------------------------
+
+TOOLS += [
+    {
+        "name": "ofrecer_opciones",
+        "description": (
+            "Muestra botones de respuesta rápida bajo tu mensaje para la pregunta CERRADA "
+            "con la que terminas (sí/no, o un ítem del test con opciones cortas que mapean a "
+            "su escala). La persona puede pulsar uno o escribir libremente. Nunca en preguntas "
+            "abiertas. De 2 a 5 opciones, de 32 caracteres como máximo, sin repetir."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "opciones": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 2,
+                    "maxItems": 5,
+                    "description": "Ej: ['Sí', 'No'] o ['Nada', 'Un poco', 'Bastante', 'Mucho', 'Muchísimo'].",
+                }
+            },
+            "required": ["opciones"],
+        },
+    },
+]

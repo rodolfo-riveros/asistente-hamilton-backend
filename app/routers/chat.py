@@ -19,6 +19,7 @@ from typing import Annotated, Any, Literal
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
+from app.chat.acciones import normalizar_opciones
 from app.chat.orchestrator import procesar_mensaje
 from app.chat.session_store import nuevo_sesion_id
 from app.config import settings
@@ -96,13 +97,21 @@ class AccionActividad(BaseModel):
     actividad_id: str | None = None
 
 
+class AccionContactoConfianza(BaseModel):
+    """La app la resuelve con la persona de confianza guardada en el teléfono."""
+
+    tipo: Literal["contacto_confianza"]
+    titulo: str
+
+
 Accion = Annotated[
     AccionMusica
     | AccionRecurso
     | AccionCentro
     | AccionBuscarMapa
     | AccionLlamar
-    | AccionActividad,
+    | AccionActividad
+    | AccionContactoConfianza,
     Field(discriminator="tipo"),
 ]
 _ADAPTADOR_ACCION: TypeAdapter = TypeAdapter(Accion)
@@ -138,6 +147,9 @@ class MensajeResponse(BaseModel):
     resultado: ResultadoResponse | None = None
     # Botones del turno (música, recursos, centros, llamadas, actividad). Siempre presente.
     acciones: list[Accion] = []
+    # Respuestas rápidas (v5) para la última pregunta de la asistente: 2–5 textos
+    # de ≤ 32 caracteres, o []. Sólo valen para este mensaje: no se guardan.
+    opciones: list[str] = []
 
 
 @router.post("/mensaje", response_model=MensajeResponse)
@@ -204,6 +216,7 @@ async def enviar_mensaje(
         ubicacion_solicitada=resultado["ubicacion_solicitada"],
         resultado=resultado.get("resultado"),
         acciones=acciones_validas(resultado.get("acciones")),
+        opciones=normalizar_opciones(resultado.get("opciones")),
     )
 
 
